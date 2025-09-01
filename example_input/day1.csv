@@ -1,0 +1,9 @@
+location,action,items,priority,notes,earliest,latest,service_minutes_override
+delfern,pickup,"big drill:1; rebar:5",2,"Need large truck for drill",,,,
+delfern,drop,"small pump 2:1; sand bag:2; diesel_gal:30",1,"Return equipment",,,,
+rebar factory,pickup,"rebar_ton:20",1,"Heavy load - use big truck",,,,
+construction site alpha,drop,"rebar_ton:15",2,"Priority delivery",,,,
+fuel depot,pickup,"diesel_gal:100",1,"Fuel run",,,,
+equipment yard,pickup,"small pump 2:2",1,"Multiple pumps",,,,
+construction site beta,drop,"rebar:25; sand bag:10",1,"Standard materials",,,,
+maintenance shop,pickup,"rebar:10",1,"Small pickup",,,,

@@ -1,0 +1,142 @@
+# Concrete Truck Optimizer Configuration
+# ALL tunables and hyperparameters must be defined here - no magic numbers elsewhere!
+
+# Project metadata
+project:
+  name: "Concrete Truck Optimizer"
+  units: "imperial"  # lbs/ft
+  version: "0.1.0"
+
+# Depot configuration
+depot:
+  address: "123 Depot St, Los Angeles, CA"
+  workday_window:
+    start: "07:00"
+    end: "16:30"
+
+# Fleet definitions
+fleet:
+  trucks:
+    - name: "Big Truck"
+      max_weight_lb: 12000
+      bed_len_ft: 14
+      bed_width_ft: 8
+      height_limit_ft: 9
+      large_capable: true
+    - name: "Small Truck A"
+      max_weight_lb: 3500
+      bed_len_ft: 8
+      bed_width_ft: 5.5
+      height_limit_ft: 8
+      large_capable: false
+    - name: "Small Truck B"
+      max_weight_lb: 3500
+      bed_len_ft: 8
+      bed_width_ft: 5.5
+      height_limit_ft: 8
+      large_capable: false
+
+# Service time configurations (minutes)
+service_times:
+  by_category:
+    machine: 30
+    equipment: 15
+    material: 15
+    fuel: 10
+  default_location_service_minutes: 5
+
+# Item catalog seed data
+item_catalog:
+  - name: "big drill"
+    category: "machine"
+    weight_lb_per_unit: 1800
+    dims_lwh_ft: [6, 3, 4]
+    requires_large_truck: true
+  - name: "small pump 2"
+    category: "equipment"
+    weight_lb_per_unit: 180
+    dims_lwh_ft: [2.5, 2, 2]
+    requires_large_truck: false
+  - name: "rebar"
+    category: "material"
+    weight_lb_per_unit: 20
+    requires_large_truck: false
+  - name: "rebar_ton"
+    category: "material"
+    weight_lb_per_unit: 2000
+    requires_large_truck: false
+  - name: "sand bag"
+    category: "material"
+    weight_lb_per_unit: 50
+    requires_large_truck: false
+  - name: "diesel_gal"
+    category: "fuel"
+    weight_lb_per_unit: 7.1
+    requires_large_truck: false
+
+# Constraint and policy settings
+constraints:
+  # Co-loading policy for Big Truck efficiency
+  big_truck_co_load_threshold_minutes: 15
+  
+  # Time window defaults
+  default_location_window_start: "07:00"
+  default_location_window_end: "16:30"
+  
+  # Capacity checking
+  volume_checking_enabled: false  # Future feature
+  weight_checking_enabled: true
+
+# Overtime and deferral policies
+overtime_deferral:
+  default_mode: "ask"  # ask|overtime|defer
+  overtime_slack_minutes: 30  # Threshold for triggering overtime decision
+  defer_rule: "lowest_priority_first"  # How to choose jobs to defer
+
+# Solver configuration
+solver:
+  # Primary solver selection
+  use_ortools: false  # Feature flag for OR-Tools vs greedy
+  
+  # Randomness control
+  random_seed: 42
+  
+  # Objective function weights
+  efficiency_weight: 1.0  # Weight for (drive_minutes + service_minutes)
+  priority_weight: 0.1    # Weight for priority cost (soft preference)
+  overtime_penalty_per_minute: 2.0  # Penalty for each minute of overtime
+  
+  # Local search parameters (for greedy solver)
+  local_search_iterations: 100
+  improvement_threshold: 0.01  # Minimum improvement to continue search
+
+# Google Maps configuration
+google:
+  # API settings
+  traffic_model: "BEST_GUESS"  # BEST_GUESS|OPTIMISTIC|PESSIMISTIC
+  departure_time_offset_hours: 0  # Hours from workday start for traffic estimation
+  
+  # Rate limiting and retry
+  max_retries: 3
+  retry_delay_seconds: 1.0
+  rate_limit_requests_per_second: 10
+  
+  # URL generation
+  maps:
+    segment_max_waypoints: 9  # Max waypoints per Google Maps URL
+    avoid: []  # tolls, highways, ferries
+    
+# Database settings
+database:
+  url: "sqlite:///./truck_optimizer.db"
+  echo: false  # Set to true for SQL debugging
+
+# Logging configuration
+logging:
+  level: "INFO"  # DEBUG|INFO|WARNING|ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+# Development and testing
+dev:
+  mock_google_api: false  # Use mock responses instead of real API calls
+  cache_geocoding: true   # Cache geocoding results to avoid repeated API calls
