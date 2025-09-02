@@ -5,6 +5,7 @@ Tests for constraint validation logic.
 import pytest
 from datetime import datetime, time
 from dataclasses import dataclass
+from typing import Optional
 
 from app.constraints import ConstraintValidator, LoadInfo, ConstraintViolation
 from app.models import Truck, Job, JobItem, Item, Location, ActionType, ItemCategory
@@ -18,6 +19,7 @@ class MockItem:
     category: ItemCategory
     weight_lb_per_unit: float
     requires_large_truck: bool = False
+    volume_ft3_per_unit: Optional[float] = None
 
 
 @dataclass
@@ -112,7 +114,8 @@ def test_weight_capacity_constraint():
         large_capable=False
     )
     
-    job = MockJob(id=1, location_id=1, action=ActionType.PICKUP)
+    location = MockLocation(id=1, name="Test Location")
+    job = MockJob(id=1, location_id=1, action=ActionType.PICKUP, location=location)
     
     heavy_item = MockItem(
         name="heavy_item",
@@ -149,7 +152,8 @@ def test_large_truck_requirement():
         large_capable=False
     )
     
-    job = MockJob(id=1, location_id=1, action=ActionType.PICKUP)
+    location = MockLocation(id=1, name="Test Location")
+    job = MockJob(id=1, location_id=1, action=ActionType.PICKUP, location=location)
     
     # Item that requires large truck
     big_item = MockItem(
@@ -200,12 +204,14 @@ def test_time_window_validation():
     truck = Truck(name="Test", max_weight_lb=1000, bed_len_ft=8, bed_width_ft=5, large_capable=False)
     
     # Job with time window
+    location = MockLocation(id=1, name="Test Location")
     job = MockJob(
         id=1,
         location_id=1,
         action=ActionType.DROP,
         earliest=datetime(2025, 9, 1, 14, 0),  # 2 PM
-        latest=datetime(2025, 9, 1, 16, 0)     # 4 PM
+        latest=datetime(2025, 9, 1, 16, 0),    # 4 PM
+        location=location
     )
     
     job_items = []

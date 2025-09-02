@@ -78,13 +78,43 @@ class OvertimeDeferralConfig(BaseModel):
     defer_rule: str = Field(default="lowest_priority_first")
 
 
+class SolverWeightsConfig(BaseModel):
+    """Multi-objective weights configuration."""
+    drive_minutes: float = Field(default=1.0, gt=0)
+    service_minutes: float = Field(default=0.5, gt=0)
+    overtime_minutes: float = Field(default=2.0, gt=0)
+    max_route_minutes: float = Field(default=0.1, gt=0)
+    priority_soft_cost: float = Field(default=0.2, ge=0)
+
+
+class LocalSearchConfig(BaseModel):
+    """Local search improvement configuration."""
+    enabled: bool = Field(default=True)
+    iterations: int = Field(default=100, ge=0)
+    neighborhood: List[str] = Field(default=["relocate", "swap", "two_opt"])
+    time_limit_seconds: int = Field(default=10, ge=0)
+
+
+class TracingConfig(BaseModel):
+    """Tracing configuration."""
+    enabled: bool = Field(default=False)
+    output_dir: str = Field(default="runs")
+
+
 class SolverConfig(BaseModel):
     """Solver configuration."""
     use_ortools: bool = Field(default=False)
+    single_truck_mode: int = Field(default=0, ge=0, le=1)
+    trucks_used_penalty: float = Field(default=1000.0, ge=0)
     random_seed: int = Field(default=42)
+    # Multi-objective weights
+    weights: Optional[SolverWeightsConfig] = None
+    # Legacy weights (for backward compatibility)
     efficiency_weight: float = Field(default=1.0, gt=0)
     priority_weight: float = Field(default=0.1, ge=0)
     overtime_penalty_per_minute: float = Field(default=2.0, ge=0)
+    # Local search parameters
+    improve: Optional[LocalSearchConfig] = None
     local_search_iterations: int = Field(default=100, ge=1)
     improvement_threshold: float = Field(default=0.01, gt=0)
 
@@ -152,6 +182,7 @@ class AppConfig(BaseModel):
     database: DatabaseConfig
     logging: LoggingConfig
     dev: DevConfig = Field(default_factory=DevConfig)
+    tracing: Optional[TracingConfig] = None
 
 
 class Settings(BaseSettings):
@@ -188,6 +219,11 @@ class OptimizeRequest(BaseModel):
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")  # YYYY-MM-DD
     auto: str = Field(default="ask", pattern="^(ask|overtime|defer)$")
     seed: Optional[int] = Field(default=None)
+    single_truck_mode: bool = Field(default=False)
+    solver_strategy: str = Field(default="greedy")
+    trace: bool = Field(default=False)
+    visualize: bool = Field(default=False)
+    output_dir: str = Field(default="runs")
 
 
 class ConfigUpdateRequest(BaseModel):

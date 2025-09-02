@@ -68,21 +68,42 @@ class TruckRoute:
         return self.total_drive_minutes + self.total_service_minutes
     
     def calculate_cost(self, config: AppConfig) -> float:
-        """Calculate route cost using objective function."""
-        efficiency_cost = (self.total_drive_minutes + self.total_service_minutes) * config.solver.efficiency_weight
-        overtime_cost = self.overtime_minutes * config.solver.overtime_penalty_per_minute
-        
-        # Priority cost (higher priority jobs earlier = lower cost)
-        priority_cost = 0.0
-        for i, assignment in enumerate(self.assignments):
-            # Later positions get higher cost, weighted by inverse priority
-            position_penalty = i + 1
-            priority_weight = 1.0 / max(assignment.job.priority, 1)
-            priority_cost += position_penalty * priority_weight
-        
-        priority_cost *= config.solver.priority_weight
-        
-        return efficiency_cost + overtime_cost + priority_cost
+        """Calculate route cost using multi-objective weighted function."""
+        # Use multi-objective weights if defined
+        if hasattr(config.solver, "weights"):
+            # Multi-objective weighted sum
+            drive_cost = self.total_drive_minutes * config.solver.weights.drive_minutes
+            service_cost = self.total_service_minutes * config.solver.weights.service_minutes
+            overtime_cost = self.overtime_minutes * config.solver.weights.overtime_minutes
+            max_route_cost = self.total_time_minutes * config.solver.weights.max_route_minutes
+            
+            # Priority cost (higher priority jobs earlier = lower cost)
+            priority_cost = 0.0
+            for i, assignment in enumerate(self.assignments):
+                # Later positions get higher cost, weighted by inverse priority
+                position_penalty = i + 1
+                priority_weight = 1.0 / max(assignment.job.priority, 1)
+                priority_cost += position_penalty * priority_weight
+            
+            priority_cost *= config.solver.weights.priority_soft_cost
+            
+            return drive_cost + service_cost + overtime_cost + max_route_cost + priority_cost
+        else:
+            # Legacy cost function for backward compatibility
+            efficiency_cost = (self.total_drive_minutes + self.total_service_minutes) * config.solver.efficiency_weight
+            overtime_cost = self.overtime_minutes * config.solver.overtime_penalty_per_minute
+            
+            # Priority cost (higher priority jobs earlier = lower cost)
+            priority_cost = 0.0
+            for i, assignment in enumerate(self.assignments):
+                # Later positions get higher cost, weighted by inverse priority
+                position_penalty = i + 1
+                priority_weight = 1.0 / max(assignment.job.priority, 1)
+                priority_cost += position_penalty * priority_weight
+            
+            priority_cost *= config.solver.priority_weight
+            
+            return efficiency_cost + overtime_cost + priority_cost
 
 
 @dataclass
@@ -93,6 +114,27 @@ class Solution:
     total_cost: float
     feasible: bool
     computation_time_seconds: float
+    trace_data: Optional[Dict] = None
+    
+    def calculate_total_cost(self, config: AppConfig) -> float:
+        """Calculate total solution cost including single truck mode penalties."""
+        # Sum individual route costs
+        base_cost = sum(route.calculate_cost(config) for route in self.routes if route.assignments)
+        
+        # Add penalty for number of trucks used if in single truck mode
+        used_trucks = sum(1 for route in self.routes if route.assignments)
+        truck_penalty = 0.0
+        
+        if getattr(config.solver, "single_truck_mode", 0) == 1 and used_trucks > 1:
+            # Apply penalty for each truck beyond the first one
+            truck_penalty = (used_trucks - 1) * config.solver.trucks_used_penalty
+        
+        return base_cost + truck_penalty
+    
+    @property
+    def used_trucks_count(self) -> int:
+        """Count the number of trucks used in the solution."""
+        return sum(1 for route in self.routes if route.assignments)
 
 
 class GreedySolver:
@@ -114,7 +156,9 @@ class GreedySolver:
         locations: List[Location],
         distance_matrix: RouteMatrix,
         depot_coords: Coordinates,
-        workday_start: datetime
+        workday_start: datetime,
+        trace: bool = False,
+        solver_strategy: str = "greedy"
     ) -> Solution:
         """
         Solve the truck routing problem using greedy construction + local search.
@@ -127,6 +171,8 @@ class GreedySolver:
             distance_matrix: Travel time matrix between locations
             depot_coords: Depot coordinates
             workday_start: Start time of workday
+            trace: Whether to record decision trace data
+            solver_strategy: Solver strategy to use ("greedy" or "regret2")
             
         Returns:
             Complete solution
@@ -148,27 +194,63 @@ class GreedySolver:
         # Create location index mapping
         location_to_index = {loc.id: i for i, loc in enumerate(locations)}
         
-        # Greedy construction phase
-        unassigned_jobs = self._greedy_construction(
-            routes, jobs, job_items_map, location_to_index, 
-            distance_matrix, workday_start
-        )
+        # Initialize trace data if requested
+        trace_data = None
+        if trace:
+            trace_data = {
+                "decisions": [],
+                "config": {
+                    "single_truck_mode": getattr(self.config.solver, "single_truck_mode", 0),
+                    "weights": getattr(self.config.solver, "weights", None),
+                },
+                "truck_count": len(trucks),
+                "job_count": len(jobs),
+                "timestamp": datetime.now().isoformat(),
+            }
         
-        # Local search improvement
-        self._local_search_improvement(
-            routes, unassigned_jobs, job_items_map, location_to_index,
-            distance_matrix, workday_start
-        )
+        # Choose construction method based on solver strategy
+        if solver_strategy == "regret2":
+            unassigned_jobs = self._build_solution_regret2(
+                routes, jobs, job_items_map, location_to_index, 
+                distance_matrix, workday_start, trace_data
+            )
+        else:
+            # Default to greedy construction
+            unassigned_jobs = self._greedy_construction(
+                routes, jobs, job_items_map, location_to_index, 
+                distance_matrix, workday_start, trace_data
+            )
         
-        # Calculate final costs and metrics
-        total_cost = sum(route.calculate_cost(self.config) for route in routes)
+        # Apply local search improvements if enabled
+        improve_config = getattr(self.config.solver, "improve", None)
+        if improve_config and improve_config.enabled:
+            self._local_search_improvement(
+                routes, unassigned_jobs, job_items_map, location_to_index,
+                distance_matrix, workday_start, trace_data
+            )
+        
+        # Calculate final costs and metrics with the new multi-objective function
+        total_cost = sum(route.calculate_cost(self.config) for route in routes if route.assignments)
+        
+        # Add single truck mode penalty if applicable
+        used_trucks = sum(1 for route in routes if route.assignments)
+        if getattr(self.config.solver, "single_truck_mode", 0) == 1 and used_trucks > 1:
+            truck_penalty = (used_trucks - 1) * self.config.solver.trucks_used_penalty
+            total_cost += truck_penalty
+            
+            if trace_data:
+                trace_data["single_truck_penalty"] = {
+                    "trucks_used": used_trucks,
+                    "penalty_per_truck": self.config.solver.trucks_used_penalty,
+                    "total_penalty": truck_penalty
+                }
         
         # Check feasibility (no constraint violations)
         feasible = len(unassigned_jobs) == 0
         
         computation_time = (datetime.now() - start_time).total_seconds()
         
-        logger.info(f"Greedy solver completed in {computation_time:.2f}s: "
+        logger.info(f"Solver completed in {computation_time:.2f}s: "
                    f"{len(jobs) - len(unassigned_jobs)}/{len(jobs)} jobs assigned")
         
         return Solution(
@@ -176,7 +258,8 @@ class GreedySolver:
             unassigned_jobs=unassigned_jobs,
             total_cost=total_cost,
             feasible=feasible,
-            computation_time_seconds=computation_time
+            computation_time_seconds=computation_time,
+            trace_data=trace_data
         )
     
     def _greedy_construction(
@@ -186,7 +269,8 @@ class GreedySolver:
         job_items_map: Dict[int, List[JobItem]],
         location_to_index: Dict[int, int],
         distance_matrix: RouteMatrix,
-        workday_start: datetime
+        workday_start: datetime,
+        trace_data: Optional[Dict] = None
     ) -> List[Job]:
         """Greedy construction phase using nearest neighbor heuristic."""
         unassigned_jobs = []
@@ -200,8 +284,8 @@ class GreedySolver:
             job_items = job_items_map[job.id]
             
             # Find best truck assignment
-            best_truck_idx, best_cost = self._find_best_truck_assignment(
-                job, job_items, routes, location_to_index, distance_matrix, workday_start
+            best_truck_idx, best_cost, _ = self._find_best_truck_assignment(
+                job, job_items, routes, location_to_index, distance_matrix, workday_start, trace_data
             )
             
             if best_truck_idx is not None:
@@ -216,6 +300,112 @@ class GreedySolver:
                 logger.debug(f"Could not assign job {job.id} - constraint violations")
         
         return unassigned_jobs
+        
+    def _build_solution_regret2(
+        self,
+        routes: List[TruckRoute],
+        jobs: List[Job],
+        job_items_map: Dict[int, List[JobItem]],
+        location_to_index: Dict[int, int],
+        distance_matrix: RouteMatrix,
+        workday_start: datetime,
+        trace_data: Optional[Dict] = None
+    ) -> List[Job]:
+        """
+        Build solution using regret-2 insertion algorithm.
+        
+        The regret-2 algorithm selects jobs based on the difference between their best and second-best
+        insertion costs, prioritizing jobs that would be most "regretted" if not inserted immediately.
+        This typically produces better solutions than pure greedy insertion.
+        """
+        unassigned_jobs = []
+        remaining_jobs = jobs.copy()
+        
+        # Sort jobs by priority (descending) as initial preference
+        remaining_jobs.sort(key=lambda j: j.priority, reverse=True)
+        
+        # If tracing is enabled, record regret algorithm selection
+        if trace_data is not None:
+            trace_data["algorithm"] = "regret2"
+        
+        # Process jobs until none remain
+        while remaining_jobs:
+            best_job_idx = -1
+            best_regret = -float('inf')
+            best_job_truck_idx = None
+            best_job_cost = float('inf')
+            
+            # Calculate regret value for each job
+            for i, job in enumerate(remaining_jobs):
+                job_items = job_items_map[job.id]
+                
+                # Get costs for all feasible truck assignments
+                costs = []
+                truck_assignments = []
+                
+                for truck_idx, route in enumerate(routes):
+                    cost, violations, _ = self._evaluate_job_insertion(
+                        job, job_items, route, location_to_index[job.location_id],
+                        distance_matrix, workday_start
+                    )
+                    
+                    if not violations:
+                        costs.append(cost)
+                        truck_assignments.append(truck_idx)
+                
+                # Calculate regret-2 value
+                if len(costs) >= 2:
+                    # Sort costs in ascending order
+                    sorted_costs = sorted(costs)
+                    regret = sorted_costs[1] - sorted_costs[0]
+                    
+                    # Select job with highest regret
+                    if regret > best_regret or (regret == best_regret and sorted_costs[0] < best_job_cost):
+                        best_regret = regret
+                        best_job_idx = i
+                        best_job_truck_idx = truck_assignments[costs.index(sorted_costs[0])]
+                        best_job_cost = sorted_costs[0]
+                        
+                elif len(costs) == 1:
+                    # Only one feasible insertion - use a large regret value
+                    regret = 1000.0  # Artificially high regret value
+                    
+                    if regret > best_regret or (regret == best_regret and costs[0] < best_job_cost):
+                        best_regret = regret
+                        best_job_idx = i
+                        best_job_truck_idx = truck_assignments[0]
+                        best_job_cost = costs[0]
+            
+            # If we found a job to insert, do it
+            if best_job_idx >= 0:
+                job = remaining_jobs.pop(best_job_idx)
+                job_items = job_items_map[job.id]
+                
+                # If tracing is enabled, record regret decision
+                if trace_data is not None and "decisions" in trace_data:
+                    trace_data["decisions"].append({
+                        "job_id": job.id,
+                        "action": job.action_type.name if hasattr(job, "action_type") else str(job.action),
+                        "algorithm": "regret2",
+                        "regret_value": best_regret,
+                        "selected_truck_id": routes[best_job_truck_idx].truck.id if best_job_truck_idx is not None else None,
+                        "selected_truck_name": routes[best_job_truck_idx].truck.name if best_job_truck_idx is not None else None,
+                        "cost": best_job_cost,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                
+                # Assign job to best truck
+                self._assign_job_to_route(
+                    job, job_items, routes[best_job_truck_idx],
+                    location_to_index, distance_matrix, workday_start
+                )
+            else:
+                # No feasible insertion for any remaining job
+                unassigned_jobs.extend(remaining_jobs)
+                logger.debug(f"Could not assign {len(remaining_jobs)} remaining jobs - constraint violations")
+                break
+                
+        return unassigned_jobs
     
     def _find_best_truck_assignment(
         self,
@@ -224,24 +414,54 @@ class GreedySolver:
         routes: List[TruckRoute],
         location_to_index: Dict[int, int],
         distance_matrix: RouteMatrix,
-        workday_start: datetime
-    ) -> Tuple[Optional[int], float]:
+        workday_start: datetime,
+        trace_data: Optional[Dict] = None
+    ) -> Tuple[Optional[int], float, Optional[Dict]]:
         """Find the best truck to assign a job to."""
         best_truck_idx = None
         best_cost = float('inf')
+        best_evaluation = None
         
         job_location_idx = location_to_index[job.location_id]
         
+        # Collect truck evaluations for tracing
+        truck_evaluations = []
+        
+        # Get single truck mode setting
+        single_truck_mode = getattr(self.config.solver, "single_truck_mode", 0) == 1
+        
         for truck_idx, route in enumerate(routes):
             # Check if job can be assigned to this truck
-            insertion_cost, violations = self._evaluate_job_insertion(
+            insertion_cost, violations, evaluation = self._evaluate_job_insertion(
                 job, job_items, route, job_location_idx,
-                distance_matrix, workday_start
+                distance_matrix, workday_start,
+                return_details=True
             )
+            
+            # If tracing is enabled, collect evaluation data
+            if trace_data is not None:
+                truck_eval = {
+                    "truck_id": route.truck.id,
+                    "truck_name": route.truck.name,
+                    "base_cost": insertion_cost,
+                    "violations": [str(v) for v in violations],
+                    "feasible": len(violations) == 0
+                }
+                truck_evaluations.append(truck_eval)
             
             # Skip if constraint violations
             if violations:
                 continue
+                
+            # Apply single truck mode preference if enabled
+            if single_truck_mode:
+                # Heavily prefer trucks that already have assignments
+                if len(route.assignments) > 0:
+                    # This truck is already in use, prefer it
+                    insertion_cost *= 0.5
+                elif sum(1 for r in routes if r.assignments) > 0:
+                    # Other trucks are already in use, penalize this one
+                    insertion_cost *= 2.0
             
             # Consider co-loading policy for big truck
             if route.truck.large_capable and route.assignments:
@@ -252,8 +472,24 @@ class GreedySolver:
             if insertion_cost < best_cost:
                 best_cost = insertion_cost
                 best_truck_idx = truck_idx
+                best_evaluation = evaluation
         
-        return best_truck_idx, best_cost
+        # Add evaluation data to trace if enabled
+        if trace_data is not None and "decisions" in trace_data:
+            trace_decision = {
+                "job_id": job.id,
+                "action": job.action_type.name if hasattr(job, "action_type") else str(job.action),
+                "address": job.location.address if hasattr(job.location, "address") else "unknown",
+                "truck_evaluations": truck_evaluations,
+                "selected_truck_id": routes[best_truck_idx].truck.id if best_truck_idx is not None else None,
+                "selected_truck_name": routes[best_truck_idx].truck.name if best_truck_idx is not None else None,
+                "final_cost": best_cost if best_truck_idx is not None else float('inf'),
+                "assigned": best_truck_idx is not None,
+                "timestamp": datetime.now().isoformat()
+            }
+            trace_data["decisions"].append(trace_decision)
+        
+        return best_truck_idx, best_cost, best_evaluation
     
     def _evaluate_job_insertion(
         self,
@@ -262,8 +498,9 @@ class GreedySolver:
         route: TruckRoute,
         job_location_idx: int,
         distance_matrix: RouteMatrix,
-        workday_start: datetime
-    ) -> Tuple[float, List[ConstraintViolation]]:
+        workday_start: datetime,
+        return_details: bool = False
+    ) -> Tuple[float, List[ConstraintViolation], Optional[Dict]]:
         """Evaluate the cost of inserting a job into a route."""
         # Calculate current load
         current_load = self._calculate_route_load(route, job_items)
@@ -271,6 +508,9 @@ class GreedySolver:
         # Find best insertion position
         best_position = len(route.assignments)
         best_cost = float('inf')
+        best_arrival_time = None
+        best_violations = []
+        position_evaluations = []
         
         for position in range(len(route.assignments) + 1):
             # Calculate insertion cost at this position
@@ -278,15 +518,41 @@ class GreedySolver:
                 route, position, job_location_idx, distance_matrix, workday_start
             )
             
-            if cost < best_cost:
-                # Check constraints at this position
-                violations = self.validator.validate_job_assignment(
-                    job, job_items, route.truck, current_load, arrival_time
-                )
-                
-                if not violations:
-                    best_cost = cost
-                    best_position = position
+            # Check constraints at this position
+            violations = self.validator.validate_job_assignment(
+                job, job_items, route.truck, current_load, arrival_time
+            )
+            
+            # Store position evaluation for tracing
+            if return_details:
+                position_eval = {
+                    "position": position,
+                    "cost": cost,
+                    "arrival_time": arrival_time.isoformat() if arrival_time else None,
+                    "violations": [str(v) for v in violations],
+                    "feasible": len(violations) == 0
+                }
+                position_evaluations.append(position_eval)
+            
+            if cost < best_cost and not violations:
+                best_cost = cost
+                best_position = position
+                best_arrival_time = arrival_time
+            
+            # Store violations from the best cost position, even if infeasible
+            if not best_violations or cost < best_cost:
+                best_violations = violations
+        
+        # Prepare detailed evaluation if requested
+        evaluation_details = None
+        if return_details:
+            evaluation_details = {
+                "best_position": best_position,
+                "best_cost": best_cost,
+                "best_arrival": best_arrival_time.isoformat() if best_arrival_time else None,
+                "position_evaluations": position_evaluations,
+                "feasible": best_cost < float('inf')
+            }
         
         # Return violations from best position
         if best_cost == float('inf'):
@@ -296,9 +562,9 @@ class GreedySolver:
                 truck_id=route.truck.id,
                 violation_type="no_valid_position",
                 message="No valid insertion position found"
-            )]
+            )], evaluation_details
         
-        return best_cost, []
+        return best_cost, [], evaluation_details
     
     def _calculate_insertion_cost(
         self,
@@ -456,34 +722,68 @@ class GreedySolver:
         job_items_map: Dict[int, List[JobItem]],
         location_to_index: Dict[int, int],
         distance_matrix: RouteMatrix,
-        workday_start: datetime
+        workday_start: datetime,
+        trace_data: Optional[Dict] = None
     ) -> None:
         """Apply local search improvements to the solution."""
         improved = True
         iteration = 0
         
+        # If tracing is enabled, add local search info
+        if trace_data is not None:
+            trace_data["local_search"] = {
+                "enabled": True,
+                "max_iterations": self.config.solver.local_search_iterations,
+                "improvement_threshold": self.config.solver.improvement_threshold,
+                "operations": [],
+            }
+        
+        # Main local search loop
         while improved and iteration < self.config.solver.local_search_iterations:
             improved = False
             iteration += 1
+            iteration_improvements = []
             
             # Try 2-opt improvements within each route
-            for route in routes:
+            for route_idx, route in enumerate(routes):
                 if len(route.assignments) >= 2:
+                    route_cost_before = route.calculate_cost(self.config)
                     if self._two_opt_improve_route(route, distance_matrix, workday_start):
+                        route_cost_after = route.calculate_cost(self.config)
                         improved = True
+                        
+                        if trace_data is not None:
+                            iteration_improvements.append({
+                                "operation": "two_opt",
+                                "truck_id": route.truck.id,
+                                "truck_name": route.truck.name,
+                                "cost_before": route_cost_before,
+                                "cost_after": route_cost_after,
+                                "improvement": route_cost_before - route_cost_after
+                            })
             
             # Try relocating jobs between routes
+            total_cost_before = sum(r.calculate_cost(self.config) for r in routes if r.assignments)
             if self._relocate_jobs_between_routes(
                 routes, location_to_index, distance_matrix, workday_start
             ):
+                total_cost_after = sum(r.calculate_cost(self.config) for r in routes if r.assignments)
                 improved = True
+                
+                if trace_data is not None:
+                    iteration_improvements.append({
+                        "operation": "relocate",
+                        "cost_before": total_cost_before,
+                        "cost_after": total_cost_after,
+                        "improvement": total_cost_before - total_cost_after
+                    })
             
             # Try assigning unassigned jobs again
             newly_assigned = []
             for job in unassigned_jobs[:]:
                 job_items = job_items_map[job.id]
-                best_truck_idx, _ = self._find_best_truck_assignment(
-                    job, job_items, routes, location_to_index, distance_matrix, workday_start
+                best_truck_idx, best_cost, _ = self._find_best_truck_assignment(
+                    job, job_items, routes, location_to_index, distance_matrix, workday_start, trace_data
                 )
                 
                 if best_truck_idx is not None:
@@ -493,11 +793,32 @@ class GreedySolver:
                     )
                     newly_assigned.append(job)
                     improved = True
+                    
+                    if trace_data is not None:
+                        iteration_improvements.append({
+                            "operation": "assign_unassigned",
+                            "job_id": job.id,
+                            "truck_id": routes[best_truck_idx].truck.id,
+                            "truck_name": routes[best_truck_idx].truck.name,
+                            "insertion_cost": best_cost
+                        })
             
             # Remove newly assigned jobs from unassigned list
             for job in newly_assigned:
                 unassigned_jobs.remove(job)
+                
+            # Add iteration results to trace
+            if trace_data is not None and "local_search" in trace_data:
+                trace_data["local_search"]["operations"].append({
+                    "iteration": iteration,
+                    "improvements": iteration_improvements,
+                    "improved": improved
+                })
         
+        if trace_data is not None and "local_search" in trace_data:
+            trace_data["local_search"]["completed_iterations"] = iteration
+            trace_data["local_search"]["finished_due_to"] = "max_iterations" if iteration >= self.config.solver.local_search_iterations else "no_improvement"
+            
         logger.debug(f"Local search completed after {iteration} iterations")
     
     def _two_opt_improve_route(
@@ -612,7 +933,7 @@ class GreedySolver:
                     removal_savings = self._calculate_removal_cost(source_route, assignment)
                     
                     # Calculate cost of adding to target
-                    insertion_cost, violations = self._evaluate_job_insertion(
+                    insertion_cost, violations, _ = self._evaluate_job_insertion(
                         assignment.job, assignment.job_items, target_route,
                         assignment.location_index, distance_matrix, workday_start
                     )

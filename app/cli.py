@@ -106,8 +106,15 @@ def import_jobs(ctx, input_file: str, date: str, clear: bool):
 @click.option('--auto', type=click.Choice(['ask', 'overtime', 'defer']), 
               default='ask', help='Overtime handling mode')
 @click.option('--seed', type=int, help='Random seed for deterministic results')
+@click.option('--single-truck', is_flag=True, help='Enable single-truck mode')
+@click.option('--solver', type=click.Choice(['greedy', 'regret2']), default='greedy',
+              help='Solver strategy to use')
+@click.option('--trace', is_flag=True, help='Enable decision tracing for debugging')
+@click.option('--visualize', is_flag=True, help='Generate visualization reports')
+@click.option('--output-dir', default='runs', help='Directory for output files')
 @click.pass_context
-def optimize(ctx, date: str, auto: str, seed: int):
+def optimize(ctx, date: str, auto: str, seed: int, single_truck: bool, 
+             solver: str, trace: bool, visualize: bool, output_dir: str):
     """Run route optimization for a specific date."""
     
     async def _optimize():
@@ -118,10 +125,20 @@ def optimize(ctx, date: str, auto: str, seed: int):
             request = OptimizeRequest(
                 date=date,
                 auto=auto,
-                seed=seed
+                seed=seed,
+                single_truck_mode=single_truck,
+                solver_strategy=solver,
+                trace=trace,
+                visualize=visualize,
+                output_dir=output_dir
             )
             
             click.echo(f"Optimizing routes for {date}...")
+            click.echo(f"  Solver: {solver}")
+            if single_truck:
+                click.echo("  Mode: Single-truck optimization")
+            if trace:
+                click.echo("  Tracing: Enabled")
             
             # Run optimization
             result = await service.optimize_routes(request)
@@ -149,6 +166,12 @@ def optimize(ctx, date: str, auto: str, seed: int):
                 click.echo(f"\n  Unassigned jobs:")
                 for job in result.unassigned_jobs:
                     click.echo(f"    Job {job.id}: {job.location.name} ({job.action})")
+            
+            # Output files
+            if result.output_files:
+                click.echo(f"\nOutput files:")
+                for file_type, file_path in result.output_files.items():
+                    click.echo(f"  {file_type}: {file_path}")
             
         except Exception as e:
             logger.error(f"Optimization failed: {e}")
@@ -342,6 +365,42 @@ def _load_json_file(file_path: Path) -> List[JobImportRow]:
             continue
     
     return jobs
+
+
+@main.command()
+@click.option('--date', required=True, help='Date to visualize (YYYY-MM-DD)')
+@click.option('--output-dir', default='runs', help='Directory for output files')
+@click.option('--format', type=click.Choice(['html', 'csv', 'all']), default='all',
+              help='Output format')
+@click.pass_context
+def visualize(ctx, date: str, output_dir: str, format: str):
+    """Generate visualization reports for existing solution."""
+    
+    async def _visualize():
+        service = TruckOptimizerService(ctx.obj['config_path'])
+        
+        try:
+            click.echo(f"Generating visualizations for {date}...")
+            
+            # Run visualization
+            output_files = await service.generate_reports(date, output_dir, format)
+            
+            if not output_files:
+                click.echo("No solution found for this date or visualization failed.")
+                return
+                
+            # Display results
+            click.echo(f"\nVisualizations generated:")
+            for file_type, file_path in output_files.items():
+                click.echo(f"  {file_type}: {file_path}")
+            
+        except Exception as e:
+            logger.error(f"Visualization failed: {e}")
+            raise click.ClickException(str(e))
+        finally:
+            await service.close()
+    
+    asyncio.run(_visualize())
 
 
 if __name__ == '__main__':

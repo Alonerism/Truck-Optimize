@@ -63,6 +63,58 @@ poetry run python -m app.cli serve
 # Visit http://localhost:8000/docs for API documentation
 ```
 
+## Frontend Options
+
+This repository includes two frontend options:
+
+### Lovable UI (Primary) - Modern Web Interface
+The primary frontend is a React-based web application located in the `ui-lovable/` submodule:
+
+```bash
+# Initialize submodule (if not already done)
+git submodule update --init --recursive
+
+# Start the Lovable UI
+make ui-lovable
+# OR manually:
+cd ui-lovable && npm install && npm run dev
+```
+
+Features:
+- Interactive map with job pins and route visualization
+- Modern React/TypeScript interface with Tailwind CSS
+- Real-time optimization and route management
+- Catalog management for trucks and items
+
+### Streamlit UI (Fallback) - Simple Dashboard
+A simplified Streamlit interface is available in `ui-v1/`:
+
+```bash
+# Start the Streamlit UI
+make ui-v1
+# OR manually:
+cd ui-v1 && npm install && npm run dev
+```
+
+### Running Everything Together
+
+1. **Start the backend API**:
+```bash
+make api
+# OR: poetry run uvicorn app.api:app --reload --port 8000
+```
+
+2. **Start your preferred frontend**:
+```bash
+# For the modern Lovable UI:
+make ui-lovable
+
+# For the simple Streamlit UI:
+make ui-v1
+```
+
+Both frontends will connect to the API server at `http://127.0.0.1:8000`.
+
 ## Configuration
 
 All tunable parameters are centralized in `config/params.yaml`:

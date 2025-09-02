@@ -45,7 +45,14 @@ def create_app() -> FastAPI:
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173", 
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:8501",  # Streamlit default
+            "http://127.0.0.1:8501"
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -343,6 +350,191 @@ def create_app() -> FastAPI:
             raise
         except Exception as e:
             logger.error(f"Failed to calculate KPIs: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    # Additional endpoints for Streamlit UI
+    @app.get("/jobs")
+    async def get_jobs(date: str = None, svc: TruckOptimizerService = Depends(get_service)):
+        """Get jobs, optionally filtered by date."""
+        try:
+            if date:
+                jobs = svc.repo.get_jobs_by_date(date)
+            else:
+                jobs = svc.repo.get_jobs()
+            
+            # Convert to dict format for easier JSON serialization
+            result = []
+            for job in jobs:
+                job_dict = {
+                    "id": job.id,
+                    "location_name": job.location.name if job.location else "Unknown",
+                    "address": job.location.address if job.location else None,
+                    "action": job.action.value,
+                    "priority": job.priority,
+                    "earliest": job.earliest.isoformat() if job.earliest else None,
+                    "latest": job.latest.isoformat() if job.latest else None,
+                    "notes": job.notes,
+                    "items_display": "; ".join([f"{item.item.name}:{item.qty}" for item in job.job_items])
+                }
+                result.append(job_dict)
+            
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get jobs: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.post("/jobs/quick_add")
+    async def quick_add_job(job_data: Dict[str, Any], svc: TruckOptimizerService = Depends(get_service)):
+        """Quickly add a single job with items."""
+        try:
+            # Convert the simplified format to ImportRequest format
+            job_row = {
+                "location": job_data["location_name"],
+                "action": job_data["action"],
+                "items": job_data["items"],
+                "priority": job_data.get("priority", 1),
+                "notes": job_data.get("notes", ""),
+                "earliest": job_data.get("earliest"),
+                "latest": job_data.get("latest"),
+                "service_minutes_override": None
+            }
+            
+            # If address is provided, add it to the location name
+            if job_data.get("address"):
+                job_row["location"] = f"{job_data['location_name']} ({job_data['address']})"
+            
+            request = ImportRequest(
+                data=[job_row],
+                date=job_data["date"],
+                clear_existing=False
+            )
+            
+            stats = await svc.import_jobs(request)
+            return {"success": True, "stats": stats}
+        except Exception as e:
+            logger.error(f"Failed to add job: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.delete("/jobs/{job_id}")
+    async def delete_job(job_id: int, svc: TruckOptimizerService = Depends(get_service)):
+        """Delete a job."""
+        try:
+            # TODO: Implement job deletion in repository
+            # For now, return success (would need to add to repo)
+            return {"success": True, "message": "Job deletion not yet implemented"}
+        except Exception as e:
+            logger.error(f"Failed to delete job: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/catalog/trucks")
+    async def get_catalog_trucks(svc: TruckOptimizerService = Depends(get_service)):
+        """Get all trucks in catalog format."""
+        try:
+            trucks = svc.repo.get_trucks()
+            return [
+                {
+                    "id": truck.id,
+                    "name": truck.name,
+                    "max_weight_lb": truck.max_weight_lb,
+                    "bed_len_ft": truck.bed_len_ft,
+                    "bed_width_ft": truck.bed_width_ft,
+                    "height_limit_ft": truck.height_limit_ft,
+                    "large_capable": truck.large_capable
+                }
+                for truck in trucks
+            ]
+        except Exception as e:
+            logger.error(f"Failed to get trucks: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.post("/catalog/trucks")
+    async def add_catalog_truck(truck_data: Dict[str, Any], svc: TruckOptimizerService = Depends(get_service)):
+        """Add a truck to the catalog."""
+        try:
+            # TODO: Implement truck creation in repository
+            return {"success": True, "message": "Truck creation not yet implemented"}
+        except Exception as e:
+            logger.error(f"Failed to add truck: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.delete("/catalog/trucks/{truck_id}")
+    async def delete_catalog_truck(truck_id: int, svc: TruckOptimizerService = Depends(get_service)):
+        """Delete a truck from the catalog."""
+        try:
+            # TODO: Implement truck deletion in repository
+            return {"success": True, "message": "Truck deletion not yet implemented"}
+        except Exception as e:
+            logger.error(f"Failed to delete truck: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/catalog/items")
+    async def get_catalog_items(svc: TruckOptimizerService = Depends(get_service)):
+        """Get all items in catalog format."""
+        try:
+            items = svc.repo.get_items()
+            return [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "category": item.category.value,
+                    "weight_lb_per_unit": item.weight_lb_per_unit,
+                    "requires_large_truck": item.requires_large_truck
+                }
+                for item in items
+            ]
+        except Exception as e:
+            logger.error(f"Failed to get items: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.post("/catalog/items")
+    async def add_catalog_item(item_data: Dict[str, Any], svc: TruckOptimizerService = Depends(get_service)):
+        """Add an item to the catalog."""
+        try:
+            # TODO: Implement item creation in repository
+            return {"success": True, "message": "Item creation not yet implemented"}
+        except Exception as e:
+            logger.error(f"Failed to add item: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.delete("/catalog/items/{item_id}")
+    async def delete_catalog_item(item_id: int, svc: TruckOptimizerService = Depends(get_service)):
+        """Delete an item from the catalog."""
+        try:
+            # TODO: Implement item deletion in repository
+            return {"success": True, "message": "Item deletion not yet implemented"}
+        except Exception as e:
+            logger.error(f"Failed to delete item: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/site_materials")
+    async def get_site_materials(svc: TruckOptimizerService = Depends(get_service)):
+        """Get all site materials."""
+        try:
+            # TODO: Implement site materials in repository
+            # For now, return empty list
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get site materials: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.post("/site_materials")
+    async def add_site_material(material_data: Dict[str, Any], svc: TruckOptimizerService = Depends(get_service)):
+        """Add or update site material."""
+        try:
+            # TODO: Implement site materials in repository
+            return {"success": True, "message": "Site materials not yet implemented"}
+        except Exception as e:
+            logger.error(f"Failed to add site material: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.delete("/site_materials/{material_id}")
+    async def delete_site_material(material_id: int, svc: TruckOptimizerService = Depends(get_service)):
+        """Delete site material."""
+        try:
+            # TODO: Implement site materials deletion in repository
+            return {"success": True, "message": "Site material deletion not yet implemented"}
+        except Exception as e:
+            logger.error(f"Failed to delete site material: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
     return app

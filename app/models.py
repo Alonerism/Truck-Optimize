@@ -5,7 +5,7 @@ Uses SQLModel for database ORM and Pydantic for validation.
 
 from datetime import datetime, time
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Dict
 from sqlmodel import SQLModel, Field, Relationship
 from pydantic import BaseModel
 
@@ -206,6 +206,7 @@ class OptimizationResult(BaseModel):
     total_cost: float
     solver_used: str
     computation_time_seconds: float
+    output_files: Optional[Dict[str, str]] = None
 
 
 class OvertimeDecisionRequest(BaseModel):
