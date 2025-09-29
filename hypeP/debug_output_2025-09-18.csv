@@ -1,0 +1,13 @@
+truck,stop_order,location,address
+Big Truck,0,Maintenance Shop,"6900 Sepulveda Blvd, Van Nuys, CA 91405"
+Big Truck,1,Equipment Yard,"16700 Sherman Way, Van Nuys, CA 91406"
+Big Truck,2,Construction Site Epsilon,"18300 Roscoe Blvd, Northridge, CA 91325"
+Big Truck,3,Stone Yard,"8300 Eton Ave, Canoga Park, CA 91304"
+Big Truck,4,Glass Supplier,"9200 De Soto Ave, Chatsworth, CA 91311"
+Big Truck,5,Construction Site Gamma,"9900 Balboa Blvd, Northridge, CA 91325"
+Big Truck,6,Fuel Depot,"15500 Roscoe Blvd, Van Nuys, CA 91406"
+Big Truck,7,Construction Site Beta,"13500 Saticoy St, Van Nuys, CA 91405"
+Big Truck,8,Lumber Yard,"12900 Raymer St, North Hollywood, CA 91605"
+Big Truck,9,Roofing Supply,"11800 Sherman Way, North Hollywood, CA 91605"
+Small Truck A,0,Delfern Yard,"12345 Delfern St, Los Angeles, CA 90049"
+Small Truck A,1,Delfern Yard,"12345 Delfern St, Los Angeles, CA 90049"

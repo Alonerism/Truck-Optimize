@@ -30,6 +30,73 @@ class DatabaseRepository:
     def create_tables(self) -> None:
         """Create all database tables."""
         SQLModel.metadata.create_all(self.engine)
+
+    def migrate_schema(self) -> None:
+        """Lightweight, idempotent migrations for SQLite to add new columns.
+
+        - Adds RouteAssignment.scenario (TEXT NULL)
+        - Adds RouteStop planned_* and batch_* columns (NULLable)
+        - Adds Job shipment_id (TEXT), shipment_role (TEXT CHECK), must_same_truck (BOOLEAN)
+        - Adds RouteStop extended logging fields (arrival/service_start/depart locals, priority, earliest/latest strings, curfew_window, overtime_flag, shipment fields)
+        New tables defined in models.py are created by create_all(); this method
+        focuses on altering existing tables safely.
+        """
+        try:
+            with self.engine.connect() as conn:
+                # Helper: check if a column exists in a table
+                def column_exists(table: str, column: str) -> bool:
+                    rows = conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
+                    return any(r[1] == column for r in rows)
+
+                # RouteAssignment.scenario
+                if not column_exists("routeassignment", "scenario"):
+                    conn.exec_driver_sql("ALTER TABLE routeassignment ADD COLUMN scenario TEXT")
+
+                # RouteStop planned_* and batch_* columns
+                rs_table = "routestop"
+                add_cols = {
+                    "planned_travel_minutes": "REAL",
+                    "planned_service_minutes": "REAL",
+                    "planned_wait_minutes": "REAL",
+                    "batch_index": "INTEGER",
+                    "batch_seq_in_batch": "INTEGER",
+                    # Extended logging snapshot fields
+                    "arrival_time_local": "TEXT",
+                    "service_start_local": "TEXT",
+                    "depart_time_local": "TEXT",
+                    "priority": "INTEGER",
+                    "earliest_str": "TEXT",
+                    "latest_str": "TEXT",
+                    "curfew_window": "TEXT",
+                    "overtime_flag": "BOOLEAN",
+                    "shipment_id": "TEXT",
+                    "shipment_role": "TEXT"
+                }
+                for col, coltype in add_cols.items():
+                    if not column_exists(rs_table, col):
+                        conn.exec_driver_sql(f"ALTER TABLE {rs_table} ADD COLUMN {col} {coltype}")
+
+                # Job shipment fields
+                j_table = "job"
+                if not column_exists(j_table, "shipment_id"):
+                    conn.exec_driver_sql("ALTER TABLE job ADD COLUMN shipment_id TEXT")
+                if not column_exists(j_table, "shipment_role"):
+                    conn.exec_driver_sql("ALTER TABLE job ADD COLUMN shipment_role TEXT")
+                if not column_exists(j_table, "must_same_truck"):
+                    conn.exec_driver_sql("ALTER TABLE job ADD COLUMN must_same_truck BOOLEAN DEFAULT 1")
+
+                # Add index for shipment_id
+                try:
+                    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_job_shipment ON job(shipment_id)")
+                except Exception:
+                    pass
+
+                # UnassignedJob scenario column
+                if not column_exists("unassignedjob", "scenario"):
+                    conn.exec_driver_sql("ALTER TABLE unassignedjob ADD COLUMN scenario TEXT")
+        except Exception:
+            # Best-effort: avoid crashing app startup; log at DEBUG from caller if needed
+            pass
         
     def get_session(self) -> Session:
         """Get database session."""

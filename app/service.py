@@ -4,6 +4,7 @@ Orchestrates data import, optimization, and result generation.
 """
 
 import logging
+import json
 import yaml
 from datetime import datetime, time
 from pathlib import Path
@@ -21,12 +22,19 @@ from .schemas import (
 from .repo import DatabaseRepository
 from .distance import DistanceProvider, Coordinates
 from .solver_greedy import GreedySolver, Solution
+from .solver_priority import PrioritySolver
+from .solver_ortools import ORToolsSolver
 from .url_builder import GoogleMapsUrlBuilder
 from .constraints import ConstraintValidator
-
+from .integrations.google_directions import fetch_route_overview, audit_route
+from .maps.google_map import render_map_html, render_day_csv_map_html
+from .util.gmaps_link import build_driver_link
+from .audit.eta_audit import compare_offline_vs_google, save_audit, append_learned_ratios
+from .reporting_summary import print_priority_tradeoff_hint, print_run_summary
+from app.schemas import Settings
 
 logger = logging.getLogger(__name__)
-
+settings = Settings()
 
 class TruckOptimizerService:
     """Main service for truck route optimization."""
@@ -47,6 +55,12 @@ class TruckOptimizerService:
         
         # Initialize database
         self.repo.create_tables()
+        # Apply idempotent migrations to add new columns safely
+        try:
+            self.repo.migrate_schema()
+        except Exception:
+            # Best-effort; continue startup even if migration helper fails
+            pass
         self._initialize_seed_data()
     
     def _load_config(self, config_path: str) -> AppConfig:
@@ -65,6 +79,22 @@ class TruckOptimizerService:
             level=getattr(logging, self.config.logging.level),
             format=self.config.logging.format
         )
+
+    def apply_overrides(self, overrides: Dict[str, Any]) -> None:
+        """Apply dot-path overrides onto loaded config (CLI > YAML)."""
+        if not overrides:
+            return
+        def set_dot(obj, path, val):
+            parts = path.split('.')
+            cur = obj
+            for p in parts[:-1]:
+                cur = getattr(cur, p)
+            setattr(cur, parts[-1], val)
+        for k, v in overrides.items():
+            try:
+                set_dot(self.config, k, v)
+            except Exception as e:
+                logger.warning(f"Override failed for {k}: {e}")
     
     def _initialize_seed_data(self) -> None:
         """Initialize database with seed data from configuration."""
@@ -103,9 +133,12 @@ class TruckOptimizerService:
             logger.info(f"Cleared {deleted_count} existing jobs for {request.date}")
         
         # Process locations first
-        unique_locations = set()
-        for row in request.data:
-            unique_locations.add(row.location)
+            unique_locations: Dict[str, Optional[str]] = {}
+            for row in request.data:
+                loc_name = getattr(row, 'location_name', None) or getattr(row, 'location', None)
+                addr = getattr(row, 'address', None)
+                if loc_name:
+                    unique_locations.setdefault(loc_name, addr)
         
         location_coords = await self._process_locations(unique_locations, stats)
         
@@ -135,14 +168,15 @@ class TruckOptimizerService:
     
     async def _process_locations(
         self, 
-        location_names: set, 
+        locations_map: Dict[str, Optional[str]], 
         stats: ImportStatsResponse
     ) -> Dict[str, Coordinates]:
         """Process and geocode locations."""
-        location_coords = {}
-        addresses_to_geocode = []
+        location_coords: Dict[str, Coordinates] = {}
+        # Map address string we will geocode -> location_name
+        addr_to_name: Dict[str, str] = {}
         
-        for location_name in location_names:
+        for location_name, given_address in locations_map.items():
             existing_location = self.repo.get_location_by_name(location_name)
             
             if existing_location:
@@ -153,30 +187,32 @@ class TruckOptimizerService:
                         lon=existing_location.lon
                     )
                 else:
-                    # Needs geocoding
-                    addresses_to_geocode.append(location_name)
+                    # Needs geocoding; prefer stored address then given address, else name
+                    address = existing_location.address or given_address or location_name
+                    addr_to_name[address] = location_name
                     stats.locations_updated += 1
             else:
                 # New location
                 new_location = self.repo.create_location({
                     "name": location_name,
-                    "address": location_name,  # Use name as address for now
+                    "address": given_address or location_name,
                 })
-                addresses_to_geocode.append(location_name)
+                addr_to_name[new_location.address] = location_name
                 stats.locations_created += 1
         
         # Geocode addresses
-        if addresses_to_geocode:
-            geocoding_results = await self.distance_provider.geocode_locations(addresses_to_geocode)
-            stats.geocoding_requests += len(addresses_to_geocode)
+        if addr_to_name:
+            geocoding_results = await self.distance_provider.geocode_locations(list(addr_to_name.keys()))
+            stats.geocoding_requests += len(addr_to_name)
             
             for address, coords in geocoding_results.items():
-                if coords:
+                loc_name = addr_to_name.get(address)
+                if coords and loc_name:
                     # Update location with coordinates
-                    location = self.repo.get_location_by_name(address)
+                    location = self.repo.get_location_by_name(loc_name)
                     if location:
                         self.repo.update_location_coordinates(location.id, coords.lat, coords.lon)
-                        location_coords[address] = coords
+                        location_coords[loc_name] = coords
                 else:
                     error_msg = f"Failed to geocode location: {address}"
                     logger.warning(error_msg)
@@ -207,10 +243,13 @@ class TruckOptimizerService:
         stats: ImportStatsResponse
     ) -> None:
         """Create a job and its items from import row."""
-        # Get location
-        location = self.repo.get_location_by_name(row.location)
+        # Get location (new: location_name; legacy: location)
+        loc_name = getattr(row, 'location_name', None) or getattr(row, 'location', None)
+        if not loc_name:
+            raise ValueError("Missing location_name")
+        location = self.repo.get_location_by_name(loc_name)
         if not location:
-            raise ValueError(f"Location not found: {row.location}")
+            raise ValueError(f"Location not found: {loc_name}")
         
         # Parse times
         earliest = None
@@ -221,9 +260,11 @@ class TruckOptimizerService:
             latest = datetime.fromisoformat(row.latest)
         
         # Create job
+        # Coerce action to enum value
+        action_val = row.action.value if hasattr(row.action, 'value') else (row.action.lower() if isinstance(row.action, str) else row.action)
         job_data = {
             "location_id": location.id,
-            "action": row.action,
+            "action": ActionType(action_val) if isinstance(action_val, str) else action_val,
             "priority": row.priority,
             "date": date,
             "earliest": earliest,
@@ -280,6 +321,8 @@ class TruckOptimizerService:
             Optimization result or overtime decision request
         """
         start_time = datetime.now()
+        # Keep a reference to the request for downstream save hooks (e.g., scenario)
+        self.last_request = request
         
         # Load data
         trucks = self.repo.get_trucks()
@@ -319,21 +362,52 @@ class TruckOptimizerService:
                 logger.warning(f"Missing coordinates for location {location.name}")
                 location_coords.append(depot_coords)  # Fallback to depot
         
-        # Calculate distance matrix
+        # Calculate time reference
         workday_start = datetime.fromisoformat(f"{request.date}T{self.config.depot.workday_window.start}:00")
-        distance_matrix = await self.distance_provider.compute_travel_matrix(
-            location_coords, 
-            departure_time=workday_start
-        )
-        
-        if not distance_matrix:
-            raise ValueError("Failed to compute distance matrix")
-        
+
         # Run optimization
-        if self.config.solver.use_ortools:
-            # TODO: Implement OR-Tools solver
-            raise NotImplementedError("OR-Tools solver not yet implemented")
+        distance_matrix = None  # ensure defined for downstream calls (e.g., overtime decision)
+        if request.scenario == "priority":
+            # Use PrioritySolver with provided parameters
+            params = request.params or {}
+            # Build params from known knobs in request if present
+            # The user might pass a dict externally; keep this flexible by accepting method arg
+            prio_solver = PrioritySolver(self.config, self.distance_provider.travel_time)
+            solution = prio_solver.solve(
+                trucks=trucks,
+                jobs=jobs,
+                job_items_map=job_items_map,
+                locations=locations,
+                depot_coords=depot_coords,
+                date=request.date,
+                params=params,
+            )
+        elif self.config.solver.use_ortools:
+            # Offline OR-Tools path: do not call Google matrix during solve
+            solver = ORToolsSolver(self.config)
+            # Build a trivial mock matrix to satisfy interface; OR-Tools will use offline matrices internally
+            from .distance import RouteMatrix
+            mock_matrix = RouteMatrix(origins=location_coords, destinations=location_coords,
+                                      durations_minutes=[[0.0]*len(location_coords) for _ in location_coords],
+                                      distances_meters=[[0.0]*len(location_coords) for _ in location_coords])
+            distance_matrix = mock_matrix
+            solution = solver.solve(
+                trucks=trucks,
+                jobs=jobs,
+                job_items_map=job_items_map,
+                locations=locations,
+                distance_matrix=mock_matrix,
+                depot_coords=depot_coords,
+                workday_start=workday_start
+            )
         else:
+            # Legacy greedy path uses Google distance matrix
+            distance_matrix = await self.distance_provider.compute_travel_matrix(
+                location_coords,
+                departure_time=workday_start
+            )
+            if not distance_matrix:
+                raise ValueError("Failed to compute distance matrix")
             solver = GreedySolver(self.config)
             solution = solver.solve(
                 trucks=trucks,
@@ -358,14 +432,236 @@ class TruckOptimizerService:
         
         # Save results
         await self._save_optimization_results(solution, request.date)
+
+        # Post-solve: fetch Directions overview (traffic) per route and render map
+        polylines: List[str] = []
+        google_totals: Dict[str, float] = {}
+        if not self.config.dev.mock_google_api and self.settings.google_maps_api_key:
+            dep_epoch = int(workday_start.timestamp()) + int(self.config.google.departure_time_offset_hours) * 3600
+            for route in solution.routes:
+                ordered_coords = []
+                # depot -> stops -> depot
+                ordered_coords.append((depot_coords.lat, depot_coords.lon))
+                for a in route.assignments:
+                    if a.job.location.lat and a.job.location.lon:
+                        ordered_coords.append((a.job.location.lat, a.job.location.lon))
+                ordered_coords.append((depot_coords.lat, depot_coords.lon))
+                overview = await fetch_route_overview(
+                    self.settings.google_maps_api_key,
+                    ordered_coords,
+                    dep_epoch,
+                    traffic_model=self.config.google.traffic_model.lower(),
+                )
+                if overview:
+                    polylines.append(overview.get("polyline"))
+                    google_totals[route.truck.name] = float(overview.get("duration_in_traffic_min", 0.0))
+                else:
+                    polylines.append(None)
+
+        # Optional ETA audit: compare offline vs Google per-leg and save artifacts
+        if getattr(getattr(self.config, "audit", {}), "enable_eta_audit", False) and not self.config.dev.mock_google_api and self.settings.google_maps_api_key:
+            dep_epoch = int(workday_start.timestamp())
+            all_rows = []
+            agg_stats = {}
+            for route in solution.routes:
+                if not route.assignments:
+                    continue
+                ordered_coords = [(depot_coords.lat, depot_coords.lon)]
+                offline_legs = []
+                prev = (depot_coords.lat, depot_coords.lon)
+                for a in route.assignments:
+                    cur = (a.job.location.lat, a.job.location.lon)
+                    ordered_coords.append(cur)
+                    offline_legs.append(a.drive_minutes_from_previous)
+                    prev = cur
+                ordered_coords.append((depot_coords.lat, depot_coords.lon))
+                # Get Google per-leg
+                legs = await audit_route(
+                    self.settings.google_maps_api_key,
+                    ordered_coords,
+                    dep_epoch,
+                    traffic_model=self.config.google.traffic_model.lower(),
+                )
+                if not legs:
+                    continue
+                df, stats = compare_offline_vs_google(legs, offline_legs, route.truck.name)
+                all_rows.append(df)
+                agg_stats[route.truck.name] = stats
+                # Print short summary
+                off_total = sum(x for x in offline_legs if x is not None)
+                g_total = sum(legs[i].get("google_minutes", 0.0) for i in range(min(len(legs), len(offline_legs))))
+                delta = off_total - g_total
+                logger.info(f"[ETA AUDIT] {route.truck.name}: offline={off_total:.1f}m google={g_total:.1f}m delta={delta:+.1f}m")
+                worst = df.dropna().sort_values("pct_err", ascending=False).head(3)
+                for _, row in worst.iterrows():
+                    logger.info(f"  leg {int(row['seq'])}: offline={row['offline_min']:.1f} google={row['google_min']:.1f} pct_err={row['pct_err']:.1f}%")
+            if all_rows:
+                big = __import__("pandas").concat(all_rows, ignore_index=True)
+                out = save_audit(big, agg_stats, out_dir="artifacts", date=request.date)
+                # Append simple learned ratios for future runs
+                try:
+                    learned_csv = append_learned_ratios(big, str(Path("artifacts") / "traffic_learned.csv"))
+                    logger.info(f"Learned ratios appended: {learned_csv}")
+                except Exception as e:
+                    logger.debug(f"append_learned_ratios skipped: {e}")
+                logger.info(f"ETA audit saved: {out}")
+        elif getattr(getattr(self.config, "audit", {}), "enable_eta_audit", False):
+            # Google audit requested but unavailable; save offline-only summary for traceability
+            try:
+                pd = __import__("pandas")
+                rows = []
+                for route in solution.routes:
+                    if not route.assignments:
+                        continue
+                    for i, a in enumerate(route.assignments):
+                        rows.append({
+                            "route_id": route.truck.name,
+                            "seq": i,
+                            "offline_min": a.drive_minutes_from_previous,
+                            "google_min": None,
+                            "delta_min": None,
+                            "pct_err": None,
+                        })
+                df = pd.DataFrame(rows)
+                out = save_audit(df, {}, out_dir="artifacts", date=request.date)
+                logger.info(f"ETA offline audit placeholder saved: {out}")
+            except Exception:
+                pass
+        
+        # Render map html if any polyline
+        output_files = {}
+        if polylines:
+            out_path = f"runs/{request.date}_map.html"
+            map_path = render_map_html([p for p in polylines if p], out_path, self.settings.google_maps_api_key or "")
+            output_files["map_html"] = map_path
         
         # Convert to API response
         result = self._convert_solution_to_result(solution, request.date, start_time, depot_coords)
+        if request.scenario == "priority":
+            result.solver_used = "priority"
+        else:
+            result.solver_used = "ortools" if self.config.solver.use_ortools else "greedy"
+        if output_files:
+            result.output_files = output_files
         
-        logger.info(f"Optimization completed: {len(result.routes)} routes, "
-                   f"{len(result.unassigned_jobs)} unassigned jobs")
+        # Tuning hint for drop penalty
+        pen = getattr(self.config, "penalties", None)
+        if pen:
+            print_priority_tradeoff_hint(pen.disjunction_base, pen.priority_weight)
+
+        # Concise run summary: offline vs google totals when available
+        try:
+            pen_dict = None
+            if getattr(self.config, "penalties", None):
+                pen = self.config.penalties
+                pen_dict = {"priority_weight": pen.priority_weight, "disjunction_base": pen.disjunction_base}
+            print_run_summary(solution, google_totals, pen_dict)
+        except Exception:
+            # Fallback to logger summaries if helper fails
+            for r in solution.routes:
+                rid = r.truck.name
+                off_total = r.total_drive_minutes + r.total_service_minutes
+                g_total = google_totals.get(rid)
+                delta = (off_total - g_total) if g_total is not None else None
+                load_lb = r.total_weight_lb
+                on_time = (r.overtime_minutes <= 0.0)
+                logger.info(f"[SUMMARY] {rid} stops={len(r.assignments)} offline={off_total:.1f}m"
+                            + (f" google={g_total:.1f}m delta={delta:+.1f}m" if g_total is not None else "")
+                            + f" load={load_lb:.0f}lb on_time={'Y' if on_time else 'N'}")
+
+        logger.info(f"Optimization completed: {len(result.routes)} routes, {len(result.unassigned_jobs)} unassigned jobs")
+        # Write JSONL per-route logs (low-risk artifact for debugging/comparison)
+        try:
+            self._write_jsonl_logs(
+                solution,
+                date=request.date,
+                scenario=request.scenario,
+                workday_start=workday_start,
+                params=request.params or {},
+            )
+        except Exception as e:
+            logger.debug(f"jsonl logging skipped: {e}")
         
         return result
+
+    async def generate_reports(self, date: str, output_dir: str, format: str = "all") -> Dict[str, str]:
+        """Generate visualization artifacts for a given date.
+
+        Currently generates a CSV-based Google Map HTML (day1_map.html) that loads
+        the example CSV and renders markers/routes. The Google Maps JS API key is
+        read from Settings (.env) and injected into the script tag using async+defer.
+
+        Returns a mapping of artifact type to file path.
+        """
+        out: Dict[str, str] = {}
+        try:
+            out_dir = Path(output_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            # CSV-based map for demo/sample input
+            map_html_path = out_dir / "day1_map.html"
+            key = self.settings.google_maps_api_key or ""
+            render_day_csv_map_html(str(map_html_path), key)
+            out["map_html"] = str(map_html_path)
+        except Exception as e:
+            logger.error(f"Failed to generate reports: {e}")
+            raise
+        return out
+
+    def _write_jsonl_logs(self, solution: Solution, date: str, scenario: Optional[str], workday_start: datetime, params: Dict[str, Any]) -> None:
+        """Emit per-route JSONL logs with meta and per-stop events.
+
+        Files: runs/logs/{date}/{truck}.jsonl
+        Events:
+        - route_meta: summary for the route and recommended first-leg departure
+        - stop: one per stop with arrival/depart, wait minutes, priority, and shipment info
+        """
+        out_dir = Path("runs") / "logs" / date
+        out_dir.mkdir(parents=True, exist_ok=True)
+        first_buf = int(params.get("first_leg_buffer_minutes", 10))
+
+        for route in solution.routes:
+            if not route.assignments:
+                continue
+            truck_name = route.truck.name
+            file_path = out_dir / f"{truck_name}.jsonl"
+            rec_depart = (workday_start + __import__("datetime").timedelta(minutes=first_buf)).isoformat()
+            meta = {
+                "type": "route_meta",
+                "date": date,
+                "scenario": scenario,
+                "truck": truck_name,
+                "total_drive_minutes": route.total_drive_minutes,
+                "total_service_minutes": route.total_service_minutes,
+                "overtime_minutes": route.overtime_minutes,
+                "first_leg_recommended_departure_local": rec_depart,
+            }
+            with open(file_path, "w") as f:
+                f.write(json.dumps(meta) + "\n")
+                prev_depart = workday_start
+                for i, a in enumerate(route.assignments, start=1):
+                    base_arrival = prev_depart + __import__("datetime").timedelta(minutes=a.drive_minutes_from_previous or 0.0)
+                    wait_min = max(0.0, (a.estimated_arrival - base_arrival).total_seconds() / 60.0)
+                    row = {
+                        "type": "stop",
+                        "seq": i,
+                        "job_id": a.job.id,
+                        "location_name": a.job.location.name,
+                        "priority": getattr(a.job, "priority", None),
+                        "arrival_local": a.estimated_arrival.isoformat(),
+                        "depart_local": a.estimated_departure.isoformat(),
+                        "drive_minutes_from_previous": a.drive_minutes_from_previous,
+                        "service_minutes": a.service_minutes,
+                        "wait_minutes": wait_min,
+                        "earliest_str": a.job.earliest.time().isoformat(timespec='minutes') if a.job.earliest else None,
+                        "latest_str": a.job.latest.time().isoformat(timespec='minutes') if a.job.latest else None,
+                        "shipment_id": getattr(a.job, "shipment_id", None),
+                        "shipment_role": getattr(a.job, "shipment_role", None),
+                    }
+                    if i == 1:
+                        row["recommended_departure_local"] = rec_depart
+                    f.write(json.dumps(row) + "\n")
+                    prev_depart = a.estimated_departure
     
     async def _handle_overtime_decision(
         self,
@@ -459,7 +755,8 @@ class TruckOptimizerService:
                 "total_drive_minutes": route.total_drive_minutes,
                 "total_service_minutes": route.total_service_minutes,
                 "total_weight_lb": route.total_weight_lb,
-                "overtime_minutes": route.overtime_minutes
+                "overtime_minutes": route.overtime_minutes,
+                "scenario": getattr(getattr(self, 'last_request', None), 'scenario', None),
             }
             
             route_assignment = self.repo.create_route_assignment(assignment_data)
@@ -473,7 +770,24 @@ class TruckOptimizerService:
                     "estimated_arrival": assignment.estimated_arrival,
                     "estimated_departure": assignment.estimated_departure,
                     "drive_minutes_from_previous": assignment.drive_minutes_from_previous,
-                    "service_minutes": assignment.service_minutes
+                    "service_minutes": assignment.service_minutes,
+                    # Placeholders; future: set to planned values when we compute waits/windows
+                    "planned_travel_minutes": assignment.drive_minutes_from_previous,
+                    "planned_service_minutes": assignment.service_minutes,
+                    "planned_wait_minutes": max(0.0, (assignment.estimated_arrival - (assignment.estimated_departure - __import__('datetime').timedelta(minutes=assignment.service_minutes))).total_seconds()/60.0) if assignment else None,
+                    "batch_index": None,
+                    "batch_seq_in_batch": None,
+                    # Extended logging snapshot fields
+                    "arrival_time_local": assignment.estimated_arrival.isoformat(),
+                    "service_start_local": assignment.estimated_arrival.isoformat(),
+                    "depart_time_local": assignment.estimated_departure.isoformat(),
+                    "priority": getattr(assignment.job, 'priority', None),
+                    "earliest_str": assignment.job.earliest.time().isoformat(timespec='minutes') if assignment.job.earliest else None,
+                    "latest_str": assignment.job.latest.time().isoformat(timespec='minutes') if assignment.job.latest else None,
+                    "curfew_window": None,
+                    "overtime_flag": route.overtime_minutes > 0,
+                    "shipment_id": getattr(assignment.job, 'shipment_id', None),
+                    "shipment_role": getattr(assignment.job, 'shipment_role', None),
                 }
                 
                 self.repo.create_route_stop(stop_data)
@@ -483,7 +797,8 @@ class TruckOptimizerService:
             unassigned_data = {
                 "job_id": job.id,
                 "date": date,
-                "reason": "Could not satisfy constraints"
+                "reason": "Could not satisfy constraints",
+                "scenario": getattr(getattr(self, 'last_request', None), 'scenario', None),
             }
             
             self.repo.create_unassigned_job(unassigned_data)
@@ -551,27 +866,12 @@ class TruckOptimizerService:
                 "large_capable": route.truck.large_capable
             }
             
-            # Generate Google Maps URL for the route
-            coordinates = []
-            # Add depot as starting point (use depot_coords from above)
-            coordinates.append(depot_coords)
-            
-            # Add all job locations
+            # Build driver link preserving order: depot -> stops -> depot
+            ordered_addrs = [self.config.depot.address]
             for assignment in route.assignments:
-                coordinates.append(Coordinates(
-                    lat=assignment.job.location.lat,
-                    lon=assignment.job.location.lon
-                ))
-            
-            # Return to depot
-            coordinates.append(depot_coords)
-            
-            # Generate URL
-            route_urls = self.url_builder.build_coordinate_urls(
-                coordinates,
-                route.truck.name
-            )
-            maps_url = route_urls.urls[0] if route_urls.urls else ""
+                ordered_addrs.append(assignment.job.location.address)
+            ordered_addrs.append(self.config.depot.address)
+            maps_url = build_driver_link(ordered_addrs)
             
             routes.append(RouteResponse(
                 truck=truck_response,
@@ -616,7 +916,7 @@ class TruckOptimizerService:
             routes=routes,
             unassigned_jobs=unassigned_jobs,
             total_cost=solution.total_cost,
-            solver_used="greedy",
+            solver_used="greedy",  # will be overridden by caller when OR-Tools is used
             computation_time_seconds=computation_time
         )
     

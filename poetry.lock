@@ -4,10 +4,9 @@
 name = "absl-py"
 version = "2.3.1"
 description = "Abseil Python Common Libraries, see https://github.com/abseil/abseil-py."
-optional = true
+optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "extra == \"ortools\""
 files = [
     {file = "absl_py-2.3.1-py3-none-any.whl", hash = "sha256:eeecf07f0c2a93ace0772c92e596ace6d3d3996c042b2128459aaae2a76de11d"},
     {file = "absl_py-2.3.1.tar.gz", hash = "sha256:a97820526f7fbfd2ec1bce83f3f25e3a14840dac0d8e02a0b71cd75db3f77fc9"},
@@ -632,10 +631,9 @@ all = ["flake8 (>=7.1.1)", "mypy (>=1.11.2)", "pytest (>=8.3.2)", "ruff (>=0.6.2
 name = "immutabledict"
 version = "4.2.1"
 description = "Immutable wrapper around dictionaries (a fork of frozendict)"
-optional = true
+optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "extra == \"ortools\""
 files = [
     {file = "immutabledict-4.2.1-py3-none-any.whl", hash = "sha256:c56a26ced38c236f79e74af3ccce53772827cef5c3bce7cab33ff2060f756373"},
     {file = "immutabledict-4.2.1.tar.gz", hash = "sha256:d91017248981c72eb66c8ff9834e99c2f53562346f23e7f51e7a5ebcf66a3bcc"},
@@ -976,10 +974,9 @@ files = [
 name = "ortools"
 version = "9.14.6206"
 description = "Google OR-Tools python libraries and modules"
-optional = true
+optional = false
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "extra == \"ortools\""
 files = [
     {file = "ortools-9.14.6206-cp310-cp310-macosx_10_15_x86_64.whl", hash = "sha256:6e2364edd1577cd094e7c7121ec5fb0aa462a69a78ce29cdc40fa45943ff0091"},
     {file = "ortools-9.14.6206-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:164b726b4d358ae68a018a52ff1999c0646d6f861b33676c2c83e2ddb60cfa13"},
@@ -2658,4 +2655,4 @@ ortools = ["ortools"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "630512893b8158bdc834e58e41de08961201436c5f7015a36186a17317fae384"
+content-hash = "3e46f5eb465f07c243bd29664620d53ea6459f2f4553bdf09277fd41f29947b2"

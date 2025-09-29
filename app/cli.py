@@ -109,12 +109,17 @@ def import_jobs(ctx, input_file: str, date: str, clear: bool):
 @click.option('--single-truck', is_flag=True, help='Enable single-truck mode')
 @click.option('--solver', type=click.Choice(['greedy', 'regret2']), default='greedy',
               help='Solver strategy to use')
+@click.option('--use-ortools', is_flag=True, help='Override to use OR-Tools offline solver')  # CLI > YAML
+@click.option('--priority-weight', type=int, help='Override penalties.priority_weight')  # CLI > YAML
+@click.option('--disjunction-base', type=int, help='Override penalties.disjunction_base')  # CLI > YAML
 @click.option('--trace', is_flag=True, help='Enable decision tracing for debugging')
 @click.option('--visualize', is_flag=True, help='Generate visualization reports')
 @click.option('--output-dir', default='runs', help='Directory for output files')
+@click.option('--scenario', default=None, help='Optional scenario tag to save with results')
 @click.pass_context
 def optimize(ctx, date: str, auto: str, seed: int, single_truck: bool, 
-             solver: str, trace: bool, visualize: bool, output_dir: str):
+             solver: str, use_ortools: bool, priority_weight: int, disjunction_base: int,
+             trace: bool, visualize: bool, output_dir: str, scenario: str):
     """Run route optimization for a specific date."""
     
     async def _optimize():
@@ -130,11 +135,26 @@ def optimize(ctx, date: str, auto: str, seed: int, single_truck: bool,
                 solver_strategy=solver,
                 trace=trace,
                 visualize=visualize,
-                output_dir=output_dir
+                output_dir=output_dir,
+                scenario=scenario
             )
             
+            # Apply CLI config overrides (precedence: CLI > YAML)
+            overrides = {}
+            if use_ortools:
+                overrides["solver.use_ortools"] = True  # flip to OR-Tools
+            if priority_weight is not None:
+                overrides["penalties.priority_weight"] = int(priority_weight)
+            if disjunction_base is not None:
+                overrides["penalties.disjunction_base"] = int(disjunction_base)
+
+            service.apply_overrides(overrides)  # small, targeted overrides
+
+            solver_label = "ortools" if service.config.solver.use_ortools else solver  # truthy print
             click.echo(f"Optimizing routes for {date}...")
-            click.echo(f"  Solver: {solver}")
+            click.echo(f"  Solver: {solver_label}")
+            if scenario:
+                click.echo(f"  Scenario: {scenario}")
             if single_truck:
                 click.echo("  Mode: Single-truck optimization")
             if trace:
@@ -180,6 +200,29 @@ def optimize(ctx, date: str, auto: str, seed: int, single_truck: bool,
             await service.close()
     
     asyncio.run(_optimize())
+
+
+@main.command()
+@click.option('--date', required=True, help='Date to debug (YYYY-MM-DD)')
+@click.option('--limit', default=5, type=int, help='Limit top-N prints (default 5)')
+@click.option('--two-pass', default=0, type=int, help='Enable two-pass refinement (0/1)')
+@click.pass_context
+def debug_pipeline(ctx, date: str, limit: int, two_pass: int):
+    """Run a printable debug pipeline with step-by-step outputs."""
+
+    async def _run():
+        service = TruckOptimizerService(ctx.obj['config_path'])
+        try:
+            # Wire overrides for two-pass if requested
+            if two_pass:
+                service.apply_overrides({"solver.two_pass_traffic": True})  # force on
+            # Lazy import to avoid overhead
+            from .debug.pipeline_view import run_debug_pipeline
+            await run_debug_pipeline(service, date, limit=limit, two_pass=bool(two_pass))
+        finally:
+            await service.close()
+
+    asyncio.run(_run())
 
 
 @main.command()
@@ -320,17 +363,25 @@ def _load_csv_file(file_path: Path) -> List[JobImportRow]:
                 # Clean up row data
                 cleaned_row = {k.strip(): v.strip() for k, v in row.items() if k}
                 
-                # Map CSV columns to JobImportRow fields
+                # Normalize headers to support new and legacy formats
+                loc_name = cleaned_row.get('location_name') or cleaned_row.get('location')
+                if not loc_name:
+                    raise ValueError("Missing 'location_name' or 'location' column")
+
+                address = cleaned_row.get('address') or None
+
+                # Build JobImportRow using new schema fields
                 job_row = JobImportRow(
-                    location=cleaned_row['location'],
+                    location_name=loc_name,
+                    address=address,
                     action=ActionType(cleaned_row['action'].lower()),
                     items=cleaned_row['items'],
                     priority=int(cleaned_row.get('priority', 1)),
-                    notes=cleaned_row.get('notes', ''),
                     earliest=cleaned_row.get('earliest') or None,
                     latest=cleaned_row.get('latest') or None,
                     service_minutes_override=int(cleaned_row['service_minutes_override']) 
-                        if cleaned_row.get('service_minutes_override') else None
+                        if cleaned_row.get('service_minutes_override') else None,
+                    notes=cleaned_row.get('notes', '')
                 )
                 
                 jobs.append(job_row)

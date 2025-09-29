@@ -74,6 +74,12 @@ class Job(SQLModel, table=True):
     location_id: int = Field(foreign_key="location.id")
     action: ActionType
     priority: int = Field(default=1)  # Higher = more important, but soft
+    # Shipment linkage and precedence
+    shipment_id: Optional[str] = Field(default=None, index=True)
+    shipment_role: Optional[str] = Field(
+        default=None, description="pickup|dropoff"
+    )
+    must_same_truck: bool = Field(default=True)
     date: str = Field(index=True)  # YYYY-MM-DD format for scheduled date
     earliest: Optional[datetime] = Field(default=None)
     latest: Optional[datetime] = Field(default=None)
@@ -110,6 +116,8 @@ class RouteAssignment(SQLModel, table=True):
     total_weight_lb: float = Field(ge=0)
     overtime_minutes: float = Field(default=0, ge=0)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Scenario tag for comparison runs (e.g., 'pure', 'priority')
+    scenario: Optional[str] = Field(default=None, index=True)
     
     # Relationships
     truck: Truck = Relationship(back_populates="route_assignments")
@@ -126,6 +134,23 @@ class RouteStop(SQLModel, table=True):
     estimated_departure: datetime
     drive_minutes_from_previous: float = Field(ge=0)
     service_minutes: float = Field(ge=0)
+    # Planned metrics and batch logging fields (nullable for backward compat)
+    planned_travel_minutes: Optional[float] = Field(default=None)
+    planned_service_minutes: Optional[float] = Field(default=None)
+    planned_wait_minutes: Optional[float] = Field(default=None)
+    batch_index: Optional[int] = Field(default=None)
+    batch_seq_in_batch: Optional[int] = Field(default=None)
+    # Extended logging snapshot fields
+    arrival_time_local: Optional[str] = Field(default=None)
+    service_start_local: Optional[str] = Field(default=None)
+    depart_time_local: Optional[str] = Field(default=None)
+    priority: Optional[int] = Field(default=None)
+    earliest_str: Optional[str] = Field(default=None)
+    latest_str: Optional[str] = Field(default=None)
+    curfew_window: Optional[str] = Field(default=None)
+    overtime_flag: Optional[bool] = Field(default=None)
+    shipment_id: Optional[str] = Field(default=None)
+    shipment_role: Optional[str] = Field(default=None)
     
     # Relationships
     route_assignment: RouteAssignment = Relationship(back_populates="route_stops")
@@ -138,7 +163,40 @@ class UnassignedJob(SQLModel, table=True):
     job_id: int = Field(foreign_key="job.id")
     date: str = Field(index=True)  # YYYY-MM-DD format
     reason: str  # Why this job couldn't be assigned
+    scenario: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ExecutionBatch(SQLModel, table=True):
+    """3-stop batch logging for future ML."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    date: str = Field(index=True)
+    route_id: int = Field(foreign_key="routeassignment.id")
+    truck_id: int = Field(foreign_key="truck.id")
+    batch_index: int
+    stops_json: str  # JSON array of job IDs or stop info
+    eta_program_minutes: float
+    eta_google_minutes: Optional[float] = Field(default=None)
+    eta_offline_minutes: Optional[float] = Field(default=None)
+    actual_minutes: Optional[float] = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ZoneCurfew(SQLModel, table=True):
+    """Curfew windows by zone (simple metadata, no geometry yet)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    applies_to_large_trucks: bool = Field(default=True)
+    window_start: Optional[time] = Field(default=None)
+    window_end: Optional[time] = Field(default=None)
+    city_name: Optional[str] = Field(default=None)
+    notes: Optional[str] = Field(default=None)
+
+
+class LocationCurfew(SQLModel, table=True):
+    """Join table linking locations to curfew zones."""
+    location_id: int = Field(foreign_key="location.id", primary_key=True)
+    zone_curfew_id: int = Field(foreign_key="zonecurfew.id", primary_key=True)
 
 
 # Pydantic models for API requests/responses

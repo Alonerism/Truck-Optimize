@@ -29,12 +29,6 @@ fleet:
       bed_width_ft: 5.5
       height_limit_ft: 8
       large_capable: false
-    - name: "Small Truck B"
-      max_weight_lb: 3500
-      bed_len_ft: 8
-      bed_width_ft: 5.5
-      height_limit_ft: 8
-      large_capable: false
 
 # Service time configurations (minutes)
 service_times:
@@ -84,8 +78,13 @@ constraints:
   default_location_window_end: "16:30"
   
   # Capacity checking
-  volume_checking_enabled: false  # Future feature
-  weight_checking_enabled: true
+  volume_checking_enabled: true  # enable
+  weight_checking_enabled: true  # keep
+
+# Global vehicle time windows (optional, overrides depot window for solver)
+tw:
+  vehicle_start: "06:00"  # depot open
+  vehicle_end: "22:00"    # depot close
 
 # Overtime and deferral policies
 overtime_deferral:
@@ -96,7 +95,16 @@ overtime_deferral:
 # Solver configuration
 solver:
   # Primary solver selection
-  use_ortools: false  # Feature flag for OR-Tools vs greedy
+  use_ortools: true  # switch to OR-Tools
+  
+  # Offline routing (no Google Matrix during solve)
+  haversine_speed_kmph: 35  # converts km->min
+  two_pass_traffic: true  # If true, performs a second routing pass using time-aware traffic data (e.g., real-time or historical profiles) to refine route estimates
+  
+  # OR-Tools search control
+  time_limit_sec: 30  # wall time for search (keep under 30s)
+  first_solution: PATH_CHEAPEST_ARC  # simple start
+  metaheuristic: GUIDED_LOCAL_SEARCH  # improve
   
   # Single truck mode
   single_truck_mode: 0  # 0=multi-truck, 1=prefer single truck
@@ -145,10 +153,29 @@ google:
     segment_max_waypoints: 9  # Max waypoints per Google Maps URL
     avoid: []  # tolls, highways, ferries
     
+# Traffic modeling for offline matrix
+traffic:
+  profile_mode: "static"  # 'static' or 'learned'
+  static_profile:  # hour bins -> speed factor (km/h multiplier)
+    - { window: '06:00-10:00', factor: 0.60 }  # rush  # slower
+    - { window: '10:00-15:00', factor: 0.85 }  # mid   # moderate
+    - { window: '15:00-19:00', factor: 0.60 }  # rush  # slower
+    - { window: '19:00-06:00', factor: 1.00 }  # night # fast
+  grid_size_km: 5  # grid cell size for learned profile
+
+# Post-solve audit controls
+audit:
+  enable_eta_audit: true  # run Google audit post-solve
+
+# Penalties for solver decisions
+penalties:
+  disjunction_base: 1000  # base drop penalty (kept)
+  priority_weight: 5      # scales drop penalty by priority
+    
 # Database settings
 database:
   url: "sqlite:///./truck_optimizer.db"
-  echo: false  # Set to true for SQL debugging
+  echo: true  # Set to true for SQL debugging
 
 # Logging configuration
 logging:

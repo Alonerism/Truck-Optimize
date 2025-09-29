@@ -1,6 +1,6 @@
 """
-Greedy solver with local search for truck route optimization.
-Implements nearest neighbor with 2-opt improvements and priority weighting.
+DEPRECATED: Greedy solver with local search for truck route optimization.
+Kept for reference and fallback only; prefer OR-Tools offline solver when enabled.
 """
 
 import random

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 import httpx
 from .schemas import AppConfig, Settings
+from .util.haversine import km, minutes_with_traffic
+from .traffic.traffic_profile import factor_for_leg
 
 
 logger = logging.getLogger(__name__)
@@ -428,6 +430,20 @@ class DistanceProvider:
             destinations=locations,
             departure_time=departure_time
         )
+    
+    def travel_time(self, origin: Coordinates, destination: Coordinates, depart_datetime: datetime) -> float:
+        """Offline travel time estimator in minutes using haversine + traffic factor.
+
+        Contract: travel_time(origin, destination, depart_datetime) -> minutes (float)
+        This provides a single abstraction point to later swap to OSRM/GraphHopper/Google.
+        """
+        # Short-circuit zero distance
+        if origin.lat == destination.lat and origin.lon == destination.lon:
+            return 0.0
+        speed = getattr(self.config.solver, "haversine_speed_kmph", 35)
+        f = factor_for_leg(depart_datetime, origin.lat, origin.lon, destination.lat, destination.lon, self.config)
+        d_km = km(origin.lat, origin.lon, destination.lat, destination.lon)
+        return minutes_with_traffic(d_km, speed, f)
     
     async def close(self):
         """Clean up resources."""

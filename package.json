@@ -1,0 +1,13 @@
+{
+  "name": "truck-optimize",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Automation tests for map visualization using Playwright",
+  "scripts": {
+    "test:playwright": "playwright test tests/playwright/test_map.js",
+    "playwright:install": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

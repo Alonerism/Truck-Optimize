@@ -40,6 +40,46 @@ cp .env.example .env
 poetry run python -m app.cli status
 ```
 
+4. **Generate the demo Google Map (HTML)**:
+```bash
+poetry run truck-optimizer visualize --date 2025-09-18
+```
+This writes `runs/day1_map.html`. Open it via a local HTTP server to allow the page to fetch the CSV:
+```bash
+python -m http.server 8000
+## Automated browser test (Playwright)
+
+You can validate the generated map HTML automatically using Playwright (headless Chromium):
+
+1) Ensure Node.js (v18+) is installed on your machine.
+2) Install dev dependencies and Chromium binaries in this repo:
+
+  Optional commands:
+  - npm install
+  - npx playwright install chromium
+
+3) Start a local server in another terminal from the repo root so the page can fetch the CSV:
+
+  Optional commands:
+  - python -m http.server 8000
+
+4) Run the Playwright test that opens `runs/day1_map.html`, waits for the map to load, logs console errors, and saves a screenshot to `runs/playwright_map.png`:
+
+  Optional commands:
+  - npx playwright test tests/playwright/test_map.js
+
+The test verifies:
+- Exactly one Google Maps script tag exists with async+defer and callback=init.
+- window.init is defined before the Maps script triggers it.
+- The map canvas renders without syntax or callback errors.
+
+# then visit http://localhost:8000/runs/day1_map.html
+```
+Notes:
+- You must set `GOOGLE_MAPS_API_KEY` in `.env`. The key is read automatically and injected into the HTML.
+- The Maps JS script loads with `async` and `defer` and uses a single `<script>` tag.
+- Markers use `google.maps.marker.AdvancedMarkerElement`.
+
 ### Basic Usage
 
 1. **Import jobs from CSV**:
@@ -234,6 +274,20 @@ google:
 ```
 
 ### Rate Limiting
+### Visualization HTML (Map)
+
+The `visualize` command generates a simple map HTML (e.g., `runs/day1_map.html`) that:
+- Loads Google Maps JS once with `async` and `defer`.
+- Requires `GOOGLE_MAPS_API_KEY` configured in `.env`.
+- Fetches the demo CSV (`example_input/day1.csv`) and geocodes addresses client-side.
+- Uses `google.maps.marker.AdvancedMarkerElement` for pins and Directions for a route polyline.
+
+Open it via a local HTTP server so the browser can fetch the CSV:
+```bash
+python -m http.server 8000
+# http://localhost:8000/runs/day1_map.html
+```
+
 ```yaml
 google:
   rate_limit_requests_per_second: 10

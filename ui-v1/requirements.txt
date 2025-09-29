@@ -1,4 +1,0 @@
-streamlit>=1.36
-plotly>=5.22
-httpx>=0.27
-pandas>=2.2

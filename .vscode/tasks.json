@@ -1,0 +1,11 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Import day1.csv",
+			"type": "shell",
+			"command": "poetry run python -m app.cli import-jobs example_input/day1.csv --date 2025-09-18 --clear",
+			"isBackground": false
+		}
+	]
+}

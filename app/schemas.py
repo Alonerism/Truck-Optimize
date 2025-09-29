@@ -3,13 +3,21 @@ Pydantic schemas for configuration, settings, and API validation.
 """
 
 from datetime import time
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field, validator
-from pydantic_settings import BaseSettings
+from enum import IntEnum
+from typing import Any, Dict, List, Optional, Union
+
+from pydantic import AliasChoices, BaseModel, Field, validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# -----------------------------
+# Config models (params.yaml)
+# -----------------------------
 
 
 class TruckConfig(BaseModel):
     """Truck configuration from params.yaml."""
+
     name: str
     max_weight_lb: float = Field(gt=0)
     bed_len_ft: float = Field(gt=0)
@@ -20,41 +28,44 @@ class TruckConfig(BaseModel):
 
 class WorkdayWindow(BaseModel):
     """Time window for workday operations."""
+
     start: str = Field(pattern=r"^\d{2}:\d{2}$")  # HH:MM format
-    end: str = Field(pattern=r"^\d{2}:\d{2}$")    # HH:MM format
-    
-    @validator('end')
+    end: str = Field(pattern=r"^\d{2}:\d{2}$")  # HH:MM format
+
+    @validator("end")
     def end_after_start(cls, v, values):
         """Ensure end time is after start time."""
-        if 'start' in values:
-            start_time = time.fromisoformat(values['start'])
+        if "start" in values:
+            start_time = time.fromisoformat(values["start"])
             end_time = time.fromisoformat(v)
             if end_time <= start_time:
-                raise ValueError('End time must be after start time')
+                raise ValueError("End time must be after start time")
         return v
 
 
 class DepotConfig(BaseModel):
     """Depot configuration."""
+
     address: str
     workday_window: WorkdayWindow
 
 
 class FleetConfig(BaseModel):
     """Fleet configuration."""
+
     trucks: List[TruckConfig]
 
 
 class ServiceTimesConfig(BaseModel):
     """Service time configuration."""
-    by_category: Dict[str, int] = Field(
-        description="Service minutes by item category"
-    )
+
+    by_category: Dict[str, int] = Field(description="Service minutes by item category")
     default_location_service_minutes: int = Field(default=5, ge=0)
 
 
 class ItemCatalogEntry(BaseModel):
     """Item catalog entry from params.yaml."""
+
     name: str
     category: str = Field(pattern="^(machine|equipment|material|fuel)$")
     weight_lb_per_unit: float = Field(ge=0)
@@ -64,6 +75,7 @@ class ItemCatalogEntry(BaseModel):
 
 class ConstraintsConfig(BaseModel):
     """Constraint configuration."""
+
     big_truck_co_load_threshold_minutes: int = Field(default=15, ge=0)
     default_location_window_start: str = Field(default="07:00")
     default_location_window_end: str = Field(default="16:30")
@@ -73,6 +85,7 @@ class ConstraintsConfig(BaseModel):
 
 class OvertimeDeferralConfig(BaseModel):
     """Overtime and deferral policy configuration."""
+
     default_mode: str = Field(default="ask", pattern="^(ask|overtime|defer)$")
     overtime_slack_minutes: int = Field(default=30, ge=0)
     defer_rule: str = Field(default="lowest_priority_first")
@@ -80,6 +93,7 @@ class OvertimeDeferralConfig(BaseModel):
 
 class SolverWeightsConfig(BaseModel):
     """Multi-objective weights configuration."""
+
     drive_minutes: float = Field(default=1.0, gt=0)
     service_minutes: float = Field(default=0.5, gt=0)
     overtime_minutes: float = Field(default=2.0, gt=0)
@@ -89,6 +103,7 @@ class SolverWeightsConfig(BaseModel):
 
 class LocalSearchConfig(BaseModel):
     """Local search improvement configuration."""
+
     enabled: bool = Field(default=True)
     iterations: int = Field(default=100, ge=0)
     neighborhood: List[str] = Field(default=["relocate", "swap", "two_opt"])
@@ -97,13 +112,21 @@ class LocalSearchConfig(BaseModel):
 
 class TracingConfig(BaseModel):
     """Tracing configuration."""
+
     enabled: bool = Field(default=False)
     output_dir: str = Field(default="runs")
 
 
 class SolverConfig(BaseModel):
     """Solver configuration."""
+
     use_ortools: bool = Field(default=False)
+    # Offline routing speed & OR-Tools params
+    haversine_speed_kmph: int = Field(default=35, ge=1)
+    two_pass_traffic: bool = Field(default=False)
+    time_limit_sec: int = Field(default=30, ge=1)
+    first_solution: str = Field(default="PATH_CHEAPEST_ARC")
+    metaheuristic: str = Field(default="GUIDED_LOCAL_SEARCH")
     single_truck_mode: int = Field(default=0, ge=0, le=1)
     trucks_used_penalty: float = Field(default=1000.0, ge=0)
     random_seed: int = Field(default=42)
@@ -121,15 +144,16 @@ class SolverConfig(BaseModel):
 
 class GoogleMapsConfig(BaseModel):
     """Google Maps API configuration."""
+
     segment_max_waypoints: int = Field(default=9, ge=2, le=25)
     avoid: List[str] = Field(default_factory=list)
 
 
 class GoogleConfig(BaseModel):
     """Google API configuration."""
+
     traffic_model: str = Field(
-        default="BEST_GUESS", 
-        pattern="^(BEST_GUESS|OPTIMISTIC|PESSIMISTIC)$"
+        default="BEST_GUESS", pattern="^(BEST_GUESS|OPTIMISTIC|PESSIMISTIC)$"
     )
     departure_time_offset_hours: int = Field(default=0, ge=0, le=24)
     max_retries: int = Field(default=3, ge=1, le=10)
@@ -138,18 +162,37 @@ class GoogleConfig(BaseModel):
     maps: GoogleMapsConfig = Field(default_factory=GoogleMapsConfig)
 
 
+class TrafficBin(BaseModel):
+    window: str
+    factor: float
+
+
+class TrafficConfig(BaseModel):
+    profile_mode: str = Field(default="static", pattern="^(static|learned)$")
+    static_profile: List[TrafficBin] = Field(default_factory=list)
+    grid_size_km: int = Field(default=5, ge=1)
+
+
+class AuditConfig(BaseModel):
+    enable_eta_audit: bool = Field(default=False)
+
+
+class PenaltiesConfig(BaseModel):
+    disjunction_base: int = Field(default=1000, ge=0)
+    priority_weight: int = Field(default=5, ge=0)
+
+
 class DatabaseConfig(BaseModel):
     """Database configuration."""
+
     url: str = Field(default="sqlite:///./truck_optimizer.db")
     echo: bool = Field(default=False)
 
 
 class LoggingConfig(BaseModel):
     """Logging configuration."""
-    level: str = Field(
-        default="INFO", 
-        pattern="^(DEBUG|INFO|WARNING|ERROR)$"
-    )
+
+    level: str = Field(default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR)$")
     format: str = Field(
         default="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
@@ -157,12 +200,14 @@ class LoggingConfig(BaseModel):
 
 class DevConfig(BaseModel):
     """Development and testing configuration."""
+
     mock_google_api: bool = Field(default=False)
     cache_geocoding: bool = Field(default=True)
 
 
 class ProjectConfig(BaseModel):
     """Top-level project configuration."""
+
     name: str = Field(default="Concrete Truck Optimizer")
     units: str = Field(default="imperial")
     version: str = Field(default="0.1.0")
@@ -170,45 +215,93 @@ class ProjectConfig(BaseModel):
 
 class AppConfig(BaseModel):
     """Complete application configuration loaded from params.yaml."""
+
     project: ProjectConfig
     depot: DepotConfig
     fleet: FleetConfig
     service_times: ServiceTimesConfig
     item_catalog: List[ItemCatalogEntry]
     constraints: ConstraintsConfig
+    tw: Optional[Dict[str, str]] = None  # vehicle_start/vehicle_end strings
     overtime_deferral: OvertimeDeferralConfig
     solver: SolverConfig
     google: GoogleConfig
+    traffic: Optional[TrafficConfig] = None
+    audit: Optional[AuditConfig] = None
+    penalties: Optional[PenaltiesConfig] = None
     database: DatabaseConfig
     logging: LoggingConfig
     dev: DevConfig = Field(default_factory=DevConfig)
-    tracing: Optional[TracingConfig] = None
+    tracing: Optional[TracingConfig] = Field(default=None)
 
 
 class Settings(BaseSettings):
     """Environment-based settings (primarily for secrets)."""
-    google_maps_api_key: Optional[str] = Field(default=None, env="GOOGLE_MAPS_API_KEY")
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+
+    google_maps_api_key: Optional[str] = Field(
+        default=None, env="GOOGLE_MAPS_API_KEY"
+    )
+    # Pydantic v2 settings configuration: load .env and ignore unrelated keys
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
-# API Request/Response Schemas
+# -----------------------------
+# API Schemas
+# -----------------------------
+
+
+class Priority(IntEnum):
+    TRUMP = 0
+    HIGH = 1
+    MEDIUM = 2
+    LOW = 3
+
+
 class JobImportRow(BaseModel):
-    """Single row from CSV import."""
-    location: str
-    action: str  # Will be validated as ActionType in service
+    """Single row from CSV import (new format) with legacy compatibility."""
+
+    # Accept either 'location_name' (new) or legacy 'location' header
+    location_name: str = Field(
+        validation_alias=AliasChoices("location_name", "location")
+    )
+    address: Optional[str] = Field(default=None)
+    action: str  # Will be validated/coerced downstream
     items: str  # "item1:qty1; item2:qty2"
-    priority: int = Field(default=1)
-    notes: str = Field(default="")
-    earliest: Optional[str] = Field(default=None)  # ISO format or None
-    latest: Optional[str] = Field(default=None)    # ISO format or None
+    priority: Union[int, str] = Field(default=1)
+    earliest: Optional[str] = Field(default=None)  # ISO HH:MM or None
+    latest: Optional[str] = Field(default=None)  # ISO HH:MM or None
     service_minutes_override: Optional[int] = Field(default=None)
+    notes: str = Field(default="")
+
+    @validator("priority", pre=True)
+    def _coerce_priority(cls, v):
+        """Coerce priority to 0..3 using Priority names or numeric strings.
+
+        Defaults to 1 (HIGH) if invalid or missing.
+        """
+        if v is None:
+            return 1
+        try:
+            if isinstance(v, int):
+                return max(0, min(3, v))
+            if isinstance(v, str) and v.strip().isdigit():
+                return max(0, min(3, int(v.strip())))
+            if isinstance(v, str):
+                name = v.strip().upper()
+                if name in Priority.__members__:
+                    return int(Priority[name])
+        except Exception:
+            pass
+        return 1
 
 
 class ImportRequest(BaseModel):
     """Import request for CSV or JSON data."""
+
     data: List[JobImportRow]
     date: str  # YYYY-MM-DD
     clear_existing: bool = Field(default=False)
@@ -216,6 +309,7 @@ class ImportRequest(BaseModel):
 
 class OptimizeRequest(BaseModel):
     """Request parameters for optimization endpoint."""
+
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")  # YYYY-MM-DD
     auto: str = Field(default="ask", pattern="^(ask|overtime|defer)$")
     seed: Optional[int] = Field(default=None)
@@ -224,10 +318,13 @@ class OptimizeRequest(BaseModel):
     trace: bool = Field(default=False)
     visualize: bool = Field(default=False)
     output_dir: str = Field(default="runs")
+    scenario: str = Field(default="priority", pattern="^(pure|priority)$")
+    params: Optional[Dict[str, Any]] = Field(default=None, description="Scenario-specific parameters (priority solver knobs)")
 
 
 class ConfigUpdateRequest(BaseModel):
     """Request to update configuration parameters."""
+
     updates: Dict[str, Any] = Field(
         description="Nested dictionary of configuration updates"
     )
@@ -235,6 +332,7 @@ class ConfigUpdateRequest(BaseModel):
 
 class ImportStatsResponse(BaseModel):
     """Response from import operation."""
+
     locations_created: int
     locations_updated: int
     items_created: int
@@ -246,6 +344,7 @@ class ImportStatsResponse(BaseModel):
 
 class KPIResponse(BaseModel):
     """Key performance indicators for a route plan."""
+
     total_drive_minutes: float
     total_service_minutes: float
     total_overtime_minutes: float
@@ -253,11 +352,12 @@ class KPIResponse(BaseModel):
     jobs_assigned: int
     jobs_unassigned: int
     efficiency_score: float  # Computed metric
-    priority_score: float    # Computed metric
+    priority_score: float  # Computed metric
 
 
 class HealthResponse(BaseModel):
     """API health check response."""
+
     status: str
     version: str
     database_connected: bool

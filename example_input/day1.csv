@@ -1,9 +1,21 @@
-location,action,items,priority,notes,earliest,latest,service_minutes_override
-delfern,pickup,"big drill:1; rebar:5",2,"Need large truck for drill",,,,
-delfern,drop,"small pump 2:1; sand bag:2; diesel_gal:30",1,"Return equipment",,,,
-rebar factory,pickup,"rebar_ton:20",1,"Heavy load - use big truck",,,,
-construction site alpha,drop,"rebar_ton:15",2,"Priority delivery",,,,
-fuel depot,pickup,"diesel_gal:100",1,"Fuel run",,,,
-equipment yard,pickup,"small pump 2:2",1,"Multiple pumps",,,,
-construction site beta,drop,"rebar:25; sand bag:10",1,"Standard materials",,,,
-maintenance shop,pickup,"rebar:10",1,"Small pickup",,,,
+location_name,address,action,items,priority,earliest,latest,service_minutes_override,notes
+Rebar Yard - Pacoima,"12900 Montague St, Pacoima, CA 91331",pickup,"rebar_ton:10",0,07:15,08:30,25,"TRUMP S1 pickup"
+Construction Alpha - NoHo,"11200 Magnolia Blvd, North Hollywood, CA 91601",drop,"rebar_ton:10",0,08:00,09:30,30,"TRUMP S1 dropoff (pickup must precede)"
+Santa Monica Transfer,"2500 Michigan Ave, Santa Monica, CA 90404",pickup,"concrete_waste_cy:8",1,08:00,16:00,20,"LARGE truck; link ZoneCurfew=SantaMonica(08:00-16:00)"
+Fuel Depot - Van Nuys,"15500 Roscoe Blvd, Van Nuys, CA 91406",pickup,"diesel_gal:150",1,07:00,17:00,15,"S2 pickup"
+Site - Tarzana,"18600 Ventura Blvd, Tarzana, CA 91356",drop,"diesel_gal:150",1,09:30,12:00,15,"S2 dropoff (after Fuel Depot)"
+Steel Supplier - Sun Valley,"8900 Tuxford St, Sun Valley, CA 91352",pickup,"beam_20ft:6",1,10:00,12:30,30,"HIGH; narrow window"
+Job - Encino,"16900 Ventura Blvd, Encino, CA 91316",drop,"beam_20ft:6",1,12:30,14:00,25,"Dropoff for beams (after Sun Valley)"
+Mini Yard - Reseda,"18400 Sherman Way, Reseda, CA 91335",pickup,"sand_bag:20",2,,,15,"MED near corridor"
+Job - Woodland Hills,"22600 Ventura Blvd, Woodland Hills, CA 91364",drop,"sand_bag:20",2,13:30,16:00,15,"Prefer inserted if cheap"
+Plant - North Hills,"15400 Plummer St, North Hills, CA 91343",pickup,"pipe_4in:40",2,07:00,11:30,20,"Morning window"
+Job - Panorama City,"14700 Parthenia St, Panorama City, CA 91402",drop,"pipe_4in:40",2,12:00,14:30,20,"Paired drop (after North Hills)"
+Tool Rental - Studio City,"11400 Ventura Blvd, Studio City, CA 91604",pickup,"plate_compactor:1",2,11:00,12:00,10,"Tight 60-min window"
+Site - Sherman Oaks,"14800 Ventura Blvd, Sherman Oaks, CA 91403",drop,"plate_compactor:1",2,12:15,12:45,10,"Tiny window near lunch"
+Yard - Chatsworth,"9600 De Soto Ave, Chatsworth, CA 91311",pickup,"pallets:10",3,,,10,"LOW filler"
+Warehouse - Canoga Park,"21300 Sherman Way, Canoga Park, CA 91303",drop,"pallets:10",3,,,10,"LOW filler (pair with Chatsworth)"
+Site - Granada Hills,"11800 Rinaldi St, Granada Hills, CA 91344",pickup,"misc_crates:4",3,15:30,17:15,10,"Late window may test overtime"
+Job - Mission Hills,"10400 Sepulveda Blvd, Mission Hills, CA 91345",drop,"misc_crates:4",3,16:15,18:30,10,"Could push into +OT"
+Staging - North Hollywood,"6750 Lankershim Blvd, North Hollywood, CA 91606",pickup,"tile_boxes:30",2,09:00,15:00,20,"MED; wide window"
+Site - Burbank Border,"8100 Vineland Ave, Sun Valley, CA 91352",drop,"tile_boxes:30",2,10:00,16:00,20,"Route-friendly drop"
+Duplicate Line Items - Encino,"16900 Ventura Blvd, Encino, CA 91316",drop,"beam_20ft:2",1,12:30,14:00,10,"Same address as earlier Encino drop → should clamp into one service"

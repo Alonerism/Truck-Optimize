@@ -1,0 +1,7 @@
+route,seq,job_id,location,arrive,depart,drive_min,service_min
+Big Truck,0,32,"maintenance shop",07:42,07:57,42.0,15.0
+Big Truck,1,25,"delfern",08:24,09:09,27.0,45.0
+Big Truck,2,26,"delfern",09:09,09:49,0.0,40.0
+Big Truck,3,29,"fuel depot",09:56,10:06,7.0,10.0
+Big Truck,4,30,"equipment yard",10:44,10:59,38.0,15.0
+Big Truck,5,31,"construction site beta",11:46,12:01,47.0,15.0
